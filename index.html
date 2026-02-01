@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Kisti Dashboard</title>
+
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #f3f4f6;
+        padding: 30px;
+      }
+
+      h1 {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+
+      .controls {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      select {
+        padding: 8px 12px;
+        font-size: 16px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        margin-top: 20px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+      }
+
+      th,
+      td {
+        border: 1px solid #ddd;
+        padding: 10px;
+        text-align: center;
+      }
+
+      th {
+        background: #2563eb;
+        color: white;
+      }
+
+      .paid {
+        color: green;
+        font-weight: bold;
+      }
+      .unpaid {
+        color: red;
+        font-weight: bold;
+      }
+
+      .charts {
+        display: flex;
+        gap: 30px;
+        margin-top: 40px;
+        flex-wrap: wrap;
+      }
+
+      canvas {
+        background: #fff;
+        padding: 20px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      }
+
+      @media print {
+        select {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Kisti Payment Dashboard</h1>
+
+    <div class="controls">
+      <label>Filter by Month: </label>
+      <select id="monthFilter">
+        <option value="all">All Months</option>
+      </select>
+    </div>
+
+    <div id="tableContainer"></div>
+
+    <div class="charts">
+      <canvas id="barChart" width="400" height="300"></canvas>
+      <canvas id="pieChart" width="400" height="300"></canvas>
+    </div>
+
+    <script>
+      const paymentData = [
+        {
+          month: "January",
+          payments: [
+            { name: "Rahim", amount: 2000, paid: true },
+            { name: "Karim", amount: 2000, paid: true },
+            { name: "Fahad", amount: 2000, paid: false },
+          ],
+        },
+        {
+          month: "February",
+          payments: [
+            { name: "Rahim", amount: 2000, paid: true },
+            { name: "Karim", amount: 2000, paid: true },
+            { name: "Fahad", amount: 2000, paid: true },
+          ],
+        },
+      ];
+
+      const filter = document.getElementById("monthFilter");
+      const tableContainer = document.getElementById("tableContainer");
+
+      let barChart, pieChart;
+
+      // Populate filter
+      paymentData.forEach(
+        (m) =>
+          (filter.innerHTML += `<option value="${m.month}">${m.month}</option>`),
+      );
+
+      function render(monthValue) {
+        tableContainer.innerHTML = "";
+
+        let totalPaid = 0;
+        let totalDue = 0;
+
+        paymentData
+          .filter((m) => monthValue === "all" || m.month === monthValue)
+          .forEach((monthData) => {
+            let html = `
+          <h2>${monthData.month}</h2>
+          <table>
+            <tr>
+              <th>Name</th>
+              <th>Amount</th>
+              <th>Status</th>
+            </tr>
+        `;
+
+            monthData.payments.forEach((p) => {
+              if (p.paid) totalPaid += p.amount;
+              else totalDue += p.amount;
+
+              html += `
+            <tr>
+              <td>${p.name}</td>
+              <td>${p.amount}</td>
+              <td class="${p.paid ? "paid" : "unpaid"}">
+                ${p.paid ? "Paid" : "Not Paid"}
+              </td>
+            </tr>
+          `;
+            });
+
+            html += `</table>`;
+            tableContainer.innerHTML += html;
+          });
+
+        updateCharts(totalPaid, totalDue);
+      }
+
+      function updateCharts(paid, due) {
+        if (barChart) barChart.destroy();
+        if (pieChart) pieChart.destroy();
+
+        barChart = new Chart(document.getElementById("barChart"), {
+          type: "bar",
+          data: {
+            labels: ["Paid", "Due"],
+            datasets: [
+              {
+                label: "Amount (Tk)",
+                data: [paid, due],
+                backgroundColor: ["#22c55e", "#ef4444"],
+              },
+            ],
+          },
+        });
+
+        pieChart = new Chart(document.getElementById("pieChart"), {
+          type: "pie",
+          data: {
+            labels: ["Paid", "Due"],
+            datasets: [
+              {
+                data: [paid, due],
+                backgroundColor: ["#22c55e", "#ef4444"],
+              },
+            ],
+          },
+        });
+      }
+
+      filter.addEventListener("change", (e) => {
+        render(e.target.value);
+      });
+
+      // Initial load
+      render("all");
+    </script>
+  </body>
+</html>
