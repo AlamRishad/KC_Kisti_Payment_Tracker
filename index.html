@@ -2,9 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Kisti Dashboard</title>
+    <title>Kisti Dashboard (Year Wise)</title>
 
-    <!-- Chart.js CDN -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
@@ -16,12 +16,13 @@
 
       h1 {
         text-align: center;
-        margin-bottom: 20px;
       }
 
-      .controls {
-        text-align: center;
-        margin-bottom: 30px;
+      .filters {
+        display: flex;
+        gap: 20px;
+        justify-content: center;
+        margin: 20px 0;
       }
 
       select {
@@ -63,6 +64,7 @@
         gap: 30px;
         margin-top: 40px;
         flex-wrap: wrap;
+        justify-content: center;
       }
 
       canvas {
@@ -72,7 +74,7 @@
       }
 
       @media print {
-        select {
+        .filters {
           display: none;
         }
       }
@@ -81,62 +83,90 @@
   <body>
     <h1>Kisti Payment Dashboard</h1>
 
-    <div class="controls">
-      <label>Filter by Month: </label>
-      <select id="monthFilter">
-        <option value="all">All Months</option>
-      </select>
+    <div class="filters">
+      <select id="yearFilter"></select>
+      <select id="monthFilter"></select>
     </div>
 
     <div id="tableContainer"></div>
 
     <div class="charts">
-      <canvas id="barChart" width="400" height="300"></canvas>
-      <canvas id="pieChart" width="400" height="300"></canvas>
+      <canvas id="barChart" width="350" height="280"></canvas>
+      <canvas id="pieChart" width="350" height="280"></canvas>
     </div>
 
     <script>
+      // 🔹 Year → Month → Payments data
       const paymentData = [
         {
-          month: "January",
-          payments: [
-            { name: "Rahim", amount: 2000, paid: true },
-            { name: "Karim", amount: 2000, paid: true },
-            { name: "Fahad", amount: 2000, paid: false },
+          year: 2026,
+          months: [
+            {
+              month: "January",
+              payments: [
+                { name: "Mobin", amount: 2000, paid: false },
+                { name: "Shawon", amount: 2000, paid: false },
+                { name: "Siam", amount: 2000, paid: false },
+                { name: "Rimon", amount: 2000, paid: false },
+                { name: "Shanto", amount: 2000, paid: false },
+                { name: "Fahim", amount: 2000, paid: false },
+                { name: "Rishad", amount: 2000, paid: false },
+              ],
+            },
+            // {
+            //   month: "February",
+            //   payments: [
+            //     { name: "Rahim", amount: 2000, paid: true },
+            //     { name: "Karim", amount: 2000, paid: true },
+            //   ],
+            // },
           ],
         },
-        {
-          month: "February",
-          payments: [
-            { name: "Rahim", amount: 2000, paid: true },
-            { name: "Karim", amount: 2000, paid: true },
-            { name: "Fahad", amount: 2000, paid: true },
-          ],
-        },
+        // {
+        //   year: 2025,
+        //   months: [
+        //     {
+        //       month: "January",
+        //       payments: [
+        //         { name: "Rahim", amount: 2500, paid: true },
+        //         { name: "Karim", amount: 2500, paid: true },
+        //       ],
+        //     },
+        //   ],
+        // },
       ];
 
-      const filter = document.getElementById("monthFilter");
+      const yearFilter = document.getElementById("yearFilter");
+      const monthFilter = document.getElementById("monthFilter");
       const tableContainer = document.getElementById("tableContainer");
 
       let barChart, pieChart;
 
-      // Populate filter
-      paymentData.forEach(
-        (m) =>
-          (filter.innerHTML += `<option value="${m.month}">${m.month}</option>`),
-      );
+      // Populate years
+      paymentData.forEach((y) => {
+        yearFilter.innerHTML += `<option value="${y.year}">${y.year}</option>`;
+      });
 
-      function render(monthValue) {
+      function populateMonths(year) {
+        monthFilter.innerHTML = `<option value="all">All Months</option>`;
+        const yearData = paymentData.find((y) => y.year == year);
+        yearData.months.forEach((m) => {
+          monthFilter.innerHTML += `<option value="${m.month}">${m.month}</option>`;
+        });
+      }
+
+      function render(year, month) {
         tableContainer.innerHTML = "";
-
         let totalPaid = 0;
         let totalDue = 0;
 
-        paymentData
-          .filter((m) => monthValue === "all" || m.month === monthValue)
-          .forEach((monthData) => {
+        const yearData = paymentData.find((y) => y.year == year);
+
+        yearData.months
+          .filter((m) => month === "all" || m.month === month)
+          .forEach((m) => {
             let html = `
-          <h2>${monthData.month}</h2>
+          <h2>${m.month} (${year})</h2>
           <table>
             <tr>
               <th>Name</th>
@@ -145,7 +175,7 @@
             </tr>
         `;
 
-            monthData.payments.forEach((p) => {
+            m.payments.forEach((p) => {
               if (p.paid) totalPaid += p.amount;
               else totalDue += p.amount;
 
@@ -171,7 +201,7 @@
         if (barChart) barChart.destroy();
         if (pieChart) pieChart.destroy();
 
-        barChart = new Chart(document.getElementById("barChart"), {
+        barChart = new Chart(barChartEl, {
           type: "bar",
           data: {
             labels: ["Paid", "Due"],
@@ -185,7 +215,7 @@
           },
         });
 
-        pieChart = new Chart(document.getElementById("pieChart"), {
+        pieChart = new Chart(pieChartEl, {
           type: "pie",
           data: {
             labels: ["Paid", "Due"],
@@ -199,12 +229,22 @@
         });
       }
 
-      filter.addEventListener("change", (e) => {
-        render(e.target.value);
+      const barChartEl = document.getElementById("barChart");
+      const pieChartEl = document.getElementById("pieChart");
+
+      yearFilter.addEventListener("change", (e) => {
+        populateMonths(e.target.value);
+        render(e.target.value, "all");
+      });
+
+      monthFilter.addEventListener("change", (e) => {
+        render(yearFilter.value, e.target.value);
       });
 
       // Initial load
-      render("all");
+      yearFilter.value = paymentData[0].year;
+      populateMonths(paymentData[0].year);
+      render(paymentData[0].year, "all");
     </script>
   </body>
 </html>
