@@ -89,6 +89,25 @@
         color: red;
         font-weight: bold;
       }
+      .clickable {
+        cursor: pointer;
+        color: #2563eb;
+        text-decoration: underline;
+      }
+
+      #personDetails {
+        margin-top: 30px;
+      }
+
+      .detail-paid {
+        color: green;
+        font-weight: bold;
+      }
+
+      .detail-due {
+        color: red;
+        font-weight: bold;
+      }
 
       @media print {
         .filters {
@@ -121,6 +140,7 @@
 
     <div id="tableContainer"></div>
     <div id="personSummary"></div>
+    <div id="personDetails"></div>
 
     <div class="charts">
       <canvas id="barChart" width="350" height="280"></canvas>
@@ -191,12 +211,8 @@
         yearData.months.forEach((month) => {
           month.payments.forEach((p) => {
             if (!personMap[p.name]) {
-              personMap[p.name] = {
-                paid: 0,
-                due: 0,
-              };
+              personMap[p.name] = { paid: 0, due: 0 };
             }
-
             if (p.paid) personMap[p.name].paid += p.amount;
             else personMap[p.name].due += p.amount;
           });
@@ -207,11 +223,10 @@
     <table class="summary-table">
       <tr>
         <th>Name</th>
-        <th>Total Paid (Tk)</th>
-        <th>Total Due (Tk)</th>
+        <th>Total Paid</th>
+        <th>Total Due</th>
         <th>Total</th>
         <th>Paid %</th>
-        <th>Due %</th>
       </tr>
   `;
 
@@ -220,22 +235,25 @@
           const due = personMap[name].due;
           const total = paid + due;
           const paidPct = total ? ((paid / total) * 100).toFixed(1) : 0;
-          const duePct = total ? ((due / total) * 100).toFixed(1) : 0;
 
           html += `
       <tr>
-        <td>${name}</td>
+        <td class="clickable" onclick="showPersonDetails('${name}', ${year})">
+          ${name}
+        </td>
         <td class="summary-paid">${paid}</td>
         <td class="summary-due">${due}</td>
         <td>${total}</td>
         <td>${paidPct}%</td>
-        <td>${duePct}%</td>
       </tr>
     `;
         });
 
         html += `</table>`;
         document.getElementById("personSummary").innerHTML = html;
+
+        // clear old detail
+        document.getElementById("personDetails").innerHTML = "";
       }
 
       function populateMonths(year) {
@@ -262,6 +280,43 @@
 
         namesSet.forEach((name) => {
           nameFilter.innerHTML += `<option value="${name}">${name}</option>`;
+        });
+      }
+      function showPersonDetails(name, year) {
+        const yearData = paymentData.find((y) => y.year == year);
+
+        let html = `
+    <h3>Monthly Breakdown: ${name} (${year})</h3>
+    <table>
+      <tr>
+        <th>Month</th>
+        <th>Amount</th>
+        <th>Status</th>
+      </tr>
+  `;
+
+        yearData.months.forEach((month) => {
+          const payment = month.payments.find((p) => p.name === name);
+
+          if (payment) {
+            html += `
+        <tr>
+          <td>${month.month}</td>
+          <td>${payment.amount}</td>
+          <td class="${payment.paid ? "detail-paid" : "detail-due"}">
+            ${payment.paid ? "Paid" : "Not Paid"}
+          </td>
+        </tr>
+      `;
+          }
+        });
+
+        html += `</table>`;
+        document.getElementById("personDetails").innerHTML = html;
+
+        // scroll to details (UX 🔥)
+        document.getElementById("personDetails").scrollIntoView({
+          behavior: "smooth",
         });
       }
 
