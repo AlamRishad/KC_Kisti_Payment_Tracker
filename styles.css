@@ -1,0 +1,156 @@
+body {
+  font-family: Arial, sans-serif;
+  background: #f3f4f6;
+  padding: 30px;
+}
+
+h1 {
+  text-align: center;
+}
+
+.filters {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+select {
+  padding: 8px 12px;
+  font-size: 16px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  margin-top: 20px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+th,
+td {
+  border: 1px solid #ddd;
+  padding: 10px;
+  text-align: center;
+}
+
+th {
+  background: #2563eb;
+  color: white;
+}
+
+.paid {
+  color: green;
+  font-weight: bold;
+}
+.unpaid {
+  color: red;
+  font-weight: bold;
+}
+
+/* .charts {
+  display: flex;
+  gap: 30px;
+  margin-top: 40px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+canvas {
+  background: #fff;
+  padding: 20px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+} */
+.summary-table {
+  margin-top: 40px;
+}
+
+.summary-table th {
+  background: #0f766e;
+}
+
+.summary-paid {
+  color: green;
+  font-weight: bold;
+}
+
+.summary-due {
+  color: red;
+  font-weight: bold;
+}
+.clickable {
+  cursor: pointer;
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+#personDetails {
+  margin-top: 30px;
+}
+
+.detail-paid {
+  color: green;
+  font-weight: bold;
+}
+
+.detail-due {
+  color: red;
+  font-weight: bold;
+}
+
+/* Charts container */
+.charts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr); /* 1 line e 2ta */
+  gap: 24px;
+  width: 100%;
+  /* max-width: 900px; */
+  margin: 20px auto 30px;
+}
+
+/* Chart card */
+.chart-card {
+  background: #ffffff;
+  padding: 18px;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.chart-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12);
+}
+
+/* Canvas */
+.chart-card canvas {
+  width: 100% !important;
+  height: 400px !important; /* control size */
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .charts {
+    grid-template-columns: 1fr; /* mobile e 1 ta করে */
+  }
+}
+@media print {
+  .filters {
+    display: none;
+  }
+}
+/* 🖨 Print-friendly */
+@media print {
+  button {
+    display: none;
+  }
+  body {
+    background: white;
+  }
+  table {
+    box-shadow: none;
+  }
+}

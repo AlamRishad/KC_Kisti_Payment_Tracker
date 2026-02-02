@@ -1,0 +1,19 @@
+[
+  {
+    "year": 2026,
+    "months": [
+      {
+        "month": "Account Opening",
+        "payments": [
+          { "name": "Mobin", "amount": 100, "paid": true },
+          { "name": "Shawon", "amount": 100, "paid": true },
+          { "name": "Siam", "amount": 100, "paid": true },
+          { "name": "Rimon", "amount": 100, "paid": true },
+          { "name": "Shanto", "amount": 100, "paid": true },
+          { "name": "Fahim", "amount": 100, "paid": true },
+          { "name": "Rishad", "amount": 100, "paid": true }
+        ]
+      }
+    ]
+  }
+]
