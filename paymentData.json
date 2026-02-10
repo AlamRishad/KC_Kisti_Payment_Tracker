@@ -3,12 +3,12 @@
     "year": 2026,
     "months": [
       {
-        "month": "January",
+        "month": "February",
         "payments": [
           { "name": "Mobin", "amount": 1000, "paid": true },
-          { "name": "Shawon", "amount": 1000, "paid": false },
+          { "name": "Shawon", "amount": 1000, "paid": true },
           { "name": "Siam", "amount": 1000, "paid": false },
-          { "name": "Rimon", "amount": 1000, "paid": false },
+          { "name": "Rimon", "amount": 1000, "paid": true },
           { "name": "Shanto", "amount": 1000, "paid": false },
           { "name": "Fahim", "amount": 1000, "paid": false },
           { "name": "Rishad", "amount": 1000, "paid": true }
