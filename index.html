@@ -2,38 +2,120 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Kisti Dashboard (Year Wise)</title>
+    <title>Kisti Dashboard</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="styles.css" />
-    <!-- <script src="script.js"></script> -->
-
-    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
-    <h1>Kisti Payment Dashboard</h1>
-    <div class="filters">
-      <button onclick="window.print()">🖨 Print Report</button>
-
-      <select id="yearFilter"></select>
-      <select id="monthFilter"></select>
-      <select id="nameFilter"></select>
-    </div>
-
-    <div id="tableContainer"></div>
-    <div id="personSummary"></div>
-    <div id="personDetails"></div>
-
-    <div class="charts">
-      <div class="chart-card">
-        <h3>📊 Yearly Collection</h3>
-        <canvas id="barChart"></canvas>
+    <div class="wrapper">
+      <div class="bank-banner">
+        <div class="bank-info-left">
+          <div class="bank-icon">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.6"
+              style="width: 20px; height: 20px; color: var(--accent)"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M3 21h18M3 10h18M3 7l9-4 9 4M4 10v11M20 10v11M8 10v11M12 10v11M16 10v11"
+              />
+            </svg>
+          </div>
+          <div>
+            <div class="bank-label">Payment Bank</div>
+            <div class="bank-name">Islami Bank Bangladesh Ltd.</div>
+          </div>
+        </div>
+        <div>
+          <div class="bank-label">Account Number</div>
+          <div class="bank-acc-wrap">
+            <div class="bank-acc">20503560301151415</div>
+            <button
+              class="copy-btn"
+              onclick="
+                navigator.clipboard.writeText('20503560301151415');
+                this.textContent = 'Copied!';
+                this.classList.add('copied');
+                setTimeout(() => {
+                  this.textContent = 'Copy';
+                  this.classList.remove('copied');
+                }, 2000);
+              "
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+        <div class="bank-badge">Savings Account</div>
       </div>
 
-      <div class="chart-card">
-        <h3>🥧 Distribution Overview</h3>
-        <canvas id="pieChart"></canvas>
+      <div class="header">
+        <div class="header-left">
+          <div class="logo-mark">K</div>
+          <div>
+            <h1>
+              Kisti Payment Dashboard <span>Monthly installment tracker</span>
+            </h1>
+          </div>
+        </div>
+        <div class="filters">
+          <button class="btn-print" onclick="window.print()">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z"
+              />
+            </svg>
+            Print Report
+          </button>
+          <select id="yearFilter"></select>
+          <select id="monthFilter"></select>
+          <select id="nameFilter"></select>
+        </div>
+      </div>
+
+      <div class="section-label">Monthly Overview</div>
+      <div id="tableContainer"></div>
+
+      <div class="section-label">Member Summary</div>
+      <div id="personSummary"></div>
+
+      <div id="personDetails"></div>
+
+      <div class="section-label">Analytics</div>
+      <div class="charts">
+        <div class="chart-card">
+          <h3>
+            <span class="dot" style="background: var(--accent)"></span> Yearly
+            Collection
+          </h3>
+          <canvas id="barChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>
+            <span class="dot" style="background: var(--accent2)"></span>
+            Distribution Overview
+          </h3>
+          <canvas id="pieChart"></canvas>
+        </div>
       </div>
     </div>
+    <script src="script.js"></script>
   </body>
-  <script src="script.js"></script>
 </html>
