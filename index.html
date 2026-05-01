@@ -1,17 +1,34 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kisti Dashboard</title>
     <link
       href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500&display=swap"
       rel="stylesheet"
     />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Bricolage+Grotesque:opsz,wght@12..96,300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Icons -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
   </head>
   <body>
     <div class="wrapper">
+      <!-- 🔔 Notification Toast -->
+      <div id="toast" class="toast hidden">
+        <i class="fas fa-check-circle"></i>
+        <span id="toastMsg">Action completed!</span>
+      </div>
+
+      <!-- Bank Banner -->
       <div class="bank-banner">
         <div class="bank-info-left">
           <div class="bank-icon">
@@ -39,25 +56,15 @@
           <div class="bank-label">Account Number</div>
           <div class="bank-acc-wrap">
             <div class="bank-acc">20503560301151415</div>
-            <button
-              class="copy-btn"
-              onclick="
-                navigator.clipboard.writeText('20503560301151415');
-                this.textContent = 'Copied!';
-                this.classList.add('copied');
-                setTimeout(() => {
-                  this.textContent = 'Copy';
-                  this.classList.remove('copied');
-                }, 2000);
-              "
-            >
-              Copy
+            <button class="copy-btn" onclick="copyAccount()">
+              <i class="fas fa-copy"></i> Copy
             </button>
           </div>
         </div>
         <div class="bank-badge">Savings Account</div>
       </div>
 
+      <!-- Header -->
       <div class="header">
         <div class="header-left">
           <div class="logo-mark">K</div>
@@ -67,26 +74,56 @@
             </h1>
           </div>
         </div>
-        <div class="filters">
-          <button class="btn-print" onclick="window.print()">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="1.8"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z"
-              />
-            </svg>
-            Print Report
+        <div class="header-actions">
+          <!-- Theme Toggle -->
+          <button class="btn-icon" id="themeToggle" title="Toggle Theme">
+            <i class="fas fa-moon"></i>
           </button>
+          <!-- Export CSV -->
+          <button class="btn-export" onclick="exportToCSV()">
+            <i class="fas fa-file-csv"></i> Export CSV
+          </button>
+          <!-- Print -->
+          <button class="btn-print" onclick="window.print()">
+            <i class="fas fa-print"></i> Print
+          </button>
+        </div>
+      </div>
+
+      <!-- 📊 Stats Cards -->
+      <div class="stats-grid" id="statsGrid">
+        <!-- Dynamically populated -->
+      </div>
+
+      <!-- Filters + Search -->
+      <div class="controls-bar">
+        <div class="search-box">
+          <i class="fas fa-search"></i>
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Search member name..."
+          />
+        </div>
+        <div class="filters">
           <select id="yearFilter"></select>
           <select id="monthFilter"></select>
           <select id="nameFilter"></select>
+        </div>
+      </div>
+
+      <!-- 📈 Progress Bar -->
+      <div class="progress-section">
+        <div class="progress-header">
+          <span>Collection Progress</span>
+          <span id="progressText">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-legend">
+          <span><span class="dot paid"></span> Paid</span>
+          <span><span class="dot due"></span> Pending</span>
         </div>
       </div>
 
@@ -115,7 +152,39 @@
           <canvas id="pieChart"></canvas>
         </div>
       </div>
+
+      <!-- ⚙️ Due Members Alert -->
+      <div id="dueAlerts" class="due-alerts hidden"></div>
     </div>
+
+    <!-- Add Payment Modal (Demo) -->
+    <div id="addModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3><i class="fas fa-plus-circle"></i> Add Payment</h3>
+          <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <form id="addForm" class="modal-form">
+          <div class="form-group">
+            <label>Member Name</label>
+            <select id="modalName" required></select>
+          </div>
+          <div class="form-group">
+            <label>Month</label>
+            <select id="modalMonth" required></select>
+          </div>
+          <div class="form-group">
+            <label>Amount (Tk)</label>
+            <input type="number" id="modalAmount" value="1000" required />
+          </div>
+          <div class="form-group checkbox">
+            <label><input type="checkbox" id="modalPaid" checked /> Paid</label>
+          </div>
+          <button type="submit" class="btn-submit">Save Payment</button>
+        </form>
+      </div>
+    </div>
+
     <script src="script.js"></script>
   </body>
 </html>
