@@ -155,6 +155,255 @@
 
       <!-- ⚙️ Due Members Alert -->
       <div id="dueAlerts" class="due-alerts hidden"></div>
+
+      <div class="section-label">Savings Calculator</div>
+
+      <div class="calc-shell">
+        <div class="calc-tabs">
+          <button
+            class="calc-tab active"
+            data-tab="fdr"
+            onclick="switchCalcTab('fdr')"
+          >
+            FDR
+          </button>
+          <button
+            class="calc-tab"
+            data-tab="dps"
+            onclick="switchCalcTab('dps')"
+          >
+            DPS
+          </button>
+        </div>
+
+        <!-- ── FDR Panel ── -->
+        <div class="calc-panel" id="panel-fdr">
+          <div class="calc-inputs">
+            <div class="calc-field">
+              <label class="calc-label">Deposit Amount (৳)</label>
+              <div class="calc-input-wrap">
+                <span class="calc-pfx">৳</span>
+                <input
+                  type="number"
+                  id="fdr-amount"
+                  class="calc-input"
+                  value="100000"
+                  min="1000"
+                  step="1000"
+                  oninput="calcFDR()"
+                />
+              </div>
+            </div>
+
+            <div class="calc-field">
+              <label class="calc-label">Annual Rate (%)</label>
+              <div class="calc-input-wrap">
+                <input
+                  type="number"
+                  id="fdr-rate"
+                  class="calc-input"
+                  value="7.5"
+                  min="0.1"
+                  max="30"
+                  step="0.1"
+                  oninput="calcFDR()"
+                />
+                <span class="calc-sfx">%</span>
+              </div>
+              <div class="calc-hint">Islami Bank FDR ≈ 7–8.5%</div>
+            </div>
+
+            <div class="calc-field">
+              <label class="calc-label">Tenure</label>
+              <div class="calc-tenure-row">
+                <div class="calc-input-wrap" style="flex: 1">
+                  <input
+                    type="number"
+                    id="fdr-years"
+                    class="calc-input"
+                    value="3"
+                    min="0"
+                    max="10"
+                    step="1"
+                    oninput="calcFDR()"
+                  />
+                  <span class="calc-sfx">yr</span>
+                </div>
+                <div class="calc-input-wrap" style="flex: 1">
+                  <input
+                    type="number"
+                    id="fdr-months"
+                    class="calc-input"
+                    value="0"
+                    min="0"
+                    max="11"
+                    step="1"
+                    oninput="calcFDR()"
+                  />
+                  <span class="calc-sfx">mo</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="calc-field">
+              <label class="calc-label">Compounding</label>
+              <select
+                id="fdr-compound"
+                class="calc-select"
+                onchange="calcFDR()"
+              >
+                <option value="1">Annually</option>
+                <option value="2">Half-Yearly</option>
+                <option value="4">Quarterly</option>
+                <option value="12" selected>Monthly</option>
+              </select>
+            </div>
+          </div>
+          <div class="calc-result-strip" id="fdr-result"></div>
+        </div>
+
+        <!-- ── DPS Panel ── -->
+        <div class="calc-panel hidden" id="panel-dps">
+          <!-- DPS mode toggle -->
+          <div class="dps-mode-bar">
+            <button
+              class="dps-mode-btn active"
+              data-mode="regular"
+              onclick="switchDpsMode('regular')"
+            >
+              Regular DPS
+            </button>
+            <button
+              class="dps-mode-btn"
+              data-mode="kisti"
+              onclick="switchDpsMode('kisti')"
+            >
+              Kisti DPS
+            </button>
+          </div>
+
+          <!-- Regular DPS -->
+          <div id="dps-regular">
+            <div class="calc-inputs">
+              <div class="calc-field">
+                <label class="calc-label">Monthly Installment (৳)</label>
+                <div class="calc-input-wrap">
+                  <span class="calc-pfx">৳</span>
+                  <input
+                    type="number"
+                    id="dps-amount"
+                    class="calc-input"
+                    value="1000"
+                    min="100"
+                    step="100"
+                    oninput="calcDPS()"
+                  />
+                </div>
+              </div>
+
+              <div class="calc-field">
+                <label class="calc-label">Annual Rate (%)</label>
+                <div class="calc-input-wrap">
+                  <input
+                    type="number"
+                    id="dps-rate"
+                    class="calc-input"
+                    value="8.0"
+                    min="0.1"
+                    max="30"
+                    step="0.1"
+                    oninput="calcDPS()"
+                  />
+                  <span class="calc-sfx">%</span>
+                </div>
+                <div class="calc-hint">Islami Bank DPS ≈ 8–9%</div>
+              </div>
+
+              <div class="calc-field">
+                <label class="calc-label">Tenure (Years)</label>
+                <div class="calc-input-wrap">
+                  <input
+                    type="number"
+                    id="dps-years"
+                    class="calc-input"
+                    value="5"
+                    min="1"
+                    max="20"
+                    step="1"
+                    oninput="calcDPS()"
+                  />
+                  <span class="calc-sfx">yr</span>
+                </div>
+              </div>
+            </div>
+            <div class="calc-result-strip" id="dps-result"></div>
+          </div>
+
+          <!-- Kisti DPS -->
+          <div id="dps-kisti" class="hidden">
+            <!-- schedule preview -->
+            <div class="kisti-schedule">
+              <div class="kisti-schedule-title">Installment Schedule</div>
+              <div class="kisti-schedule-grid">
+                <div class="kisti-row header">
+                  <span>Period</span><span>Monthly</span
+                  ><span>Phase Total</span>
+                </div>
+                <div class="kisti-row">
+                  <span>Month 1–6</span> <span>৳1,000</span><span>৳6,000</span>
+                </div>
+                <div class="kisti-row">
+                  <span>Month 7–12</span> <span>৳2,000</span
+                  ><span>৳12,000</span>
+                </div>
+                <div class="kisti-row">
+                  <span>Month 13–18</span><span>৳3,000</span
+                  ><span>৳18,000</span>
+                </div>
+                <div class="kisti-row">
+                  <span>Month 19–24</span><span>৳4,000</span
+                  ><span>৳24,000</span>
+                </div>
+                <div class="kisti-row">
+                  <span>Month 25–30</span><span>৳5,000</span
+                  ><span>৳30,000</span>
+                </div>
+                <div class="kisti-row highlight">
+                  <span>Month 31–36</span><span>৳6,000</span
+                  ><span>৳36,000</span>
+                </div>
+              </div>
+              <div class="kisti-total-deposit">
+                Total Deposited over 36 months: <strong>৳1,26,000</strong>
+              </div>
+            </div>
+
+            <div class="calc-inputs" style="margin-top: 16px">
+              <div class="calc-field">
+                <label class="calc-label">Annual Rate (%)</label>
+                <div class="calc-input-wrap">
+                  <input
+                    type="number"
+                    id="kisti-rate"
+                    class="calc-input"
+                    value="8.0"
+                    min="0.1"
+                    max="30"
+                    step="0.1"
+                    oninput="calcKistiDPS()"
+                  />
+                  <span class="calc-sfx">%</span>
+                </div>
+                <div class="calc-hint">Islami Bank DPS ≈ 8–9%</div>
+              </div>
+            </div>
+
+            <div class="calc-result-strip" id="kisti-result"></div>
+          </div>
+        </div>
+        <!-- /panel-dps -->
+      </div>
+      <
     </div>
 
     <!-- Add Payment Modal (Demo) -->

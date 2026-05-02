@@ -656,3 +656,272 @@ function showPersonDetails(name, year) {
     .getElementById("personDetails")
     .scrollIntoView({ behavior: "smooth", block: "start" });
 }
+// ─────────────────────────────────────────────────────────────
+// DROP-IN REPLACEMENT for the render() function in script.js
+// Replace the entire render() function with this one.
+// ─────────────────────────────────────────────────────────────
+
+function render(year, month, name, searchQuery) {
+  const tableContainer = document.getElementById("tableContainer");
+  tableContainer.innerHTML = "";
+  let totalPaid = 0,
+    totalDue = 0;
+
+  const yearData = paymentData.find((y) => y.year == year);
+
+  const filteredMonths = yearData.months
+    .filter((m) => month === "all" || m.month === month)
+    .map((m) => ({
+      ...m,
+      payments: m.payments.filter(
+        (p) =>
+          (name === "all" || p.name === name) &&
+          matchesSearch(p.name, searchQuery),
+      ),
+    }))
+    .filter((m) => m.payments.length > 0);
+
+  if (filteredMonths.length === 0) {
+    tableContainer.innerHTML = `<div class="empty">No records found. Try adjusting filters.</div>`;
+    updateCharts(0, 0);
+    return;
+  }
+
+  // Build accordion
+  const accordion = document.createElement("div");
+  accordion.className = "accordion";
+
+  filteredMonths.forEach((m, idx) => {
+    let mPaid = 0,
+      mDue = 0;
+    m.payments.forEach((p) => {
+      if (p.paid) {
+        mPaid += p.amount;
+        totalPaid += p.amount;
+      } else {
+        mDue += p.amount;
+        totalDue += p.amount;
+      }
+    });
+
+    // Auto-open the first (most recent) accordion item
+    const isOpen = idx === 0;
+
+    const rows = m.payments
+      .map(
+        (p) => `
+      <tr>
+        <td>${p.name}</td>
+        <td style="font-variant-numeric:tabular-nums">৳${p.amount.toLocaleString()}</td>
+        <td>
+          ${
+            p.paid
+              ? `<span class="badge-paid"><i class="fas fa-check" style="font-size:9px"></i> Paid</span>`
+              : `<span class="badge-due"><i class="fas fa-clock" style="font-size:9px"></i> Pending</span>`
+          }
+        </td>
+      </tr>
+    `,
+      )
+      .join("");
+
+    const item = document.createElement("div");
+    item.className = `acc-item${isOpen ? " is-open" : ""}`;
+    item.innerHTML = `
+      <button class="acc-trigger" type="button" aria-expanded="${isOpen}">
+        <span class="acc-month-label">${m.month} <span style="font-weight:400;color:var(--text-3);font-size:12px">${year}</span></span>
+        <div class="acc-meta">
+          ${mPaid > 0 ? `<span class="acc-chip chip-paid">৳${mPaid.toLocaleString()} paid</span>` : ""}
+          ${mDue > 0 ? `<span class="acc-chip chip-due">৳${mDue.toLocaleString()} due</span>` : ""}
+          <span class="acc-chip chip-count">${m.payments.length} member${m.payments.length !== 1 ? "s" : ""}</span>
+        </div>
+        <span class="acc-chevron">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+      </button>
+      <div class="acc-body">
+        <div class="acc-body-inner">
+          <div class="acc-table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Toggle on header click
+    item.querySelector(".acc-trigger").addEventListener("click", () => {
+      const open = item.classList.toggle("is-open");
+      item.querySelector(".acc-trigger").setAttribute("aria-expanded", open);
+    });
+
+    accordion.appendChild(item);
+  });
+
+  tableContainer.appendChild(accordion);
+  updateCharts(totalPaid, totalDue);
+}
+function switchCalcTab(tab) {
+  document
+    .querySelectorAll(".calc-tab")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
+  document
+    .getElementById("panel-fdr")
+    .classList.toggle("hidden", tab !== "fdr");
+  document
+    .getElementById("panel-dps")
+    .classList.toggle("hidden", tab !== "dps");
+}
+
+function switchDpsMode(mode) {
+  document
+    .querySelectorAll(".dps-mode-btn")
+    .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  document
+    .getElementById("dps-regular")
+    .classList.toggle("hidden", mode !== "regular");
+  document
+    .getElementById("dps-kisti")
+    .classList.toggle("hidden", mode !== "kisti");
+}
+
+// ── Helpers ─────────────────────────────────────────────────
+function fmtMoney(n) {
+  return "৳" + Math.round(n).toLocaleString("en-IN");
+}
+
+function buildResultStrip(
+  elId,
+  principal,
+  interest,
+  maturity,
+  subPrincipal,
+  subMaturity,
+) {
+  document.getElementById(elId).innerHTML = `
+    <div class="calc-res-group">
+      <div class="calc-res-label">Total Deposited</div>
+      <div class="calc-res-val v-muted">${fmtMoney(principal)}</div>
+      <div class="calc-res-sub">${subPrincipal}</div>
+    </div>
+    <div class="calc-res-divider"></div>
+    <div class="calc-res-group">
+      <div class="calc-res-label">Interest Earned</div>
+      <div class="calc-res-val v-green">${fmtMoney(interest)}</div>
+      <div class="calc-res-sub">${((interest / principal) * 100).toFixed(2)}% return</div>
+    </div>
+    <div class="calc-res-divider"></div>
+    <div class="calc-res-group">
+      <div class="calc-res-label">Maturity Amount</div>
+      <div class="calc-res-val v-indigo">${fmtMoney(maturity)}</div>
+      <div class="calc-res-sub">${subMaturity}</div>
+    </div>
+  `;
+}
+
+// ── FDR ─────────────────────────────────────────────────────
+function calcFDR() {
+  const P = parseFloat(document.getElementById("fdr-amount").value) || 0;
+  const r = parseFloat(document.getElementById("fdr-rate").value) || 0;
+  const yr = parseInt(document.getElementById("fdr-years").value) || 0;
+  const mo = parseInt(document.getElementById("fdr-months").value) || 0;
+  const n = parseInt(document.getElementById("fdr-compound").value) || 12;
+  const t = (yr * 12 + mo) / 12;
+  if (P <= 0 || r <= 0 || t <= 0) return;
+
+  const maturity = P * Math.pow(1 + r / 100 / n, n * t);
+  const interest = maturity - P;
+  const tenure = (yr > 0 ? yr + "yr " : "") + (mo > 0 ? mo + "mo" : "");
+
+  document.getElementById("fdr-result").innerHTML = `
+    <div class="calc-res-group">
+      <div class="calc-res-label">Principal</div>
+      <div class="calc-res-val v-muted">${fmtMoney(P)}</div>
+    </div>
+    <div class="calc-res-divider"></div>
+    <div class="calc-res-group">
+      <div class="calc-res-label">Interest Earned</div>
+      <div class="calc-res-val v-green">${fmtMoney(interest)}</div>
+      <div class="calc-res-sub">${((interest / P) * 100).toFixed(2)}% of principal</div>
+    </div>
+    <div class="calc-res-divider"></div>
+    <div class="calc-res-group">
+      <div class="calc-res-label">Maturity Amount</div>
+      <div class="calc-res-val v-indigo">${fmtMoney(maturity)}</div>
+      <div class="calc-res-sub">After ${tenure}</div>
+    </div>
+  `;
+}
+
+// ── Regular DPS ──────────────────────────────────────────────
+function calcDPS() {
+  const PMT = parseFloat(document.getElementById("dps-amount").value) || 0;
+  const r = parseFloat(document.getElementById("dps-rate").value) || 0;
+  const yr = parseInt(document.getElementById("dps-years").value) || 0;
+  if (PMT <= 0 || r <= 0 || yr <= 0) return;
+
+  const mr = r / 100 / 12;
+  const n = yr * 12;
+  const maturity = PMT * ((Math.pow(1 + mr, n) - 1) / mr);
+  const deposited = PMT * n;
+
+  buildResultStrip(
+    "dps-result",
+    deposited,
+    maturity - deposited,
+    maturity,
+    `${fmtMoney(PMT)}/mo × ${n} months`,
+    `After ${yr} year${yr > 1 ? "s" : ""}`,
+  );
+}
+
+// ── Kisti Variable DPS ───────────────────────────────────────
+// Schedule: installment increases ৳1,000 every 6 months
+// Months 1–6: ৳1,000 | 7–12: ৳2,000 | ... | 31–36: ৳6,000
+// Formula: each payment's future value = PMT × (1 + mr)^(remaining months)
+function calcKistiDPS() {
+  const r = parseFloat(document.getElementById("kisti-rate").value) || 0;
+  if (r <= 0) return;
+
+  const mr = r / 100 / 12;
+  const totalMonths = 36;
+
+  // Build month-by-month schedule
+  const schedule = [];
+  for (let m = 1; m <= totalMonths; m++) {
+    const phase = Math.ceil(m / 6); // 1–6
+    const pmt = phase * 1000; // ৳1k, ৳2k, ... ৳6k
+    schedule.push(pmt);
+  }
+
+  // FV = sum of each PMT × (1 + mr)^(months remaining after payment)
+  let maturity = 0;
+  let totalDeposit = 0;
+  schedule.forEach((pmt, idx) => {
+    const monthsRemaining = totalMonths - (idx + 1); // 35 down to 0
+    maturity += pmt * Math.pow(1 + mr, monthsRemaining);
+    totalDeposit += pmt;
+  });
+
+  const interest = maturity - totalDeposit;
+
+  buildResultStrip(
+    "kisti-result",
+    totalDeposit,
+    interest,
+    maturity,
+    "৳1k→৳6k/mo over 36 months",
+    "After 3 years",
+  );
+}
+
+// Auto-run on load
+document.addEventListener("DOMContentLoaded", () => {
+  calcFDR();
+  calcDPS();
+  calcKistiDPS();
+});
