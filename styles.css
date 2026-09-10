@@ -369,6 +369,7 @@ h1 span {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .btn-icon,
@@ -1531,16 +1532,55 @@ tbody td {
   .wrapper {
     padding: 16px 14px 48px;
   }
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .header-left {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .db-status-badge {
+    margin-left: auto;
+  }
+  .header-actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+  .btn-icon,
+  .btn-export,
+  .btn-print,
+  .btn-add,
+  .btn-new-month {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .btn-add,
+  .btn-new-month {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+  .btn-export,
+  .btn-print {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
   .controls-bar {
     flex-direction: column;
     align-items: stretch;
   }
   .search-box {
     max-width: 100%;
-  }
-  .header-actions {
-    width: 100%;
-    justify-content: flex-end;
   }
   .bank-banner {
     gap: 16px;
@@ -1562,10 +1602,6 @@ tbody td {
 @media (max-width: 440px) {
   .stats-grid {
     grid-template-columns: 1fr;
-  }
-  .header {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }
 
