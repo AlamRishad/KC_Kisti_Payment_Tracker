@@ -26,6 +26,8 @@
   --indigo: #7b7cff;
   --indigo-dim: rgba(123, 124, 255, 0.12);
   --gold: #f5c542;
+  --accent: var(--green);
+  --accent2: var(--indigo);
 
   --text-1: #eef1f8;
   --text-2: rgba(238, 241, 248, 0.55);
@@ -52,6 +54,8 @@
   --border: rgba(0, 0, 0, 0.07);
   --border-mid: rgba(0, 0, 0, 0.11);
   --border-strong: rgba(0, 0, 0, 0.18);
+  --accent: #059669;
+  --accent2: #6366f1;
 
   --text-1: #0f172a;
   --text-2: rgba(15, 23, 42, 0.55);
@@ -293,6 +297,74 @@ h1 span {
   letter-spacing: 0.3px;
 }
 
+/* Database Status Badge */
+.db-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  margin-left: 10px;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+.db-status-badge .db-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.db-status-badge.online {
+  background: var(--green-dim);
+  border: 1px solid var(--green-glow);
+  color: var(--green);
+}
+.db-status-badge.online .db-dot {
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+}
+.db-status-badge.syncing {
+  background: var(--indigo-dim);
+  border: 1px solid rgba(123, 124, 255, 0.35);
+  color: var(--indigo);
+}
+.db-status-badge.syncing .db-dot {
+  background: var(--indigo);
+  box-shadow: 0 0 8px var(--indigo);
+  animation: pulse 1s infinite;
+}
+.db-status-badge.connecting {
+  background: rgba(245, 197, 66, 0.12);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+  color: var(--gold);
+}
+.db-status-badge.connecting .db-dot {
+  background: var(--gold);
+}
+.db-status-badge.offline {
+  background: var(--red-dim);
+  border: 1px solid rgba(255, 87, 87, 0.3);
+  color: var(--red);
+}
+.db-status-badge.offline .db-dot {
+  background: var(--red);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -301,7 +373,9 @@ h1 span {
 
 .btn-icon,
 .btn-export,
-.btn-print {
+.btn-print,
+.btn-add,
+.btn-new-month {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -326,6 +400,32 @@ h1 span {
   border-color: var(--border-mid);
   color: var(--text-1);
   transform: translateY(-1px);
+}
+
+.btn-add {
+  background: var(--indigo-dim);
+  border: 1px solid rgba(123, 124, 255, 0.35);
+  color: #a5a6ff;
+}
+.btn-add:hover {
+  background: rgba(123, 124, 255, 0.25);
+  border-color: var(--indigo);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(123, 124, 255, 0.25);
+}
+
+.btn-new-month {
+  background: rgba(245, 197, 66, 0.12);
+  border: 1px solid rgba(245, 197, 66, 0.35);
+  color: var(--gold);
+}
+.btn-new-month:hover {
+  background: rgba(245, 197, 66, 0.22);
+  border-color: var(--gold);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 197, 66, 0.25);
 }
 
 .btn-export {
@@ -980,7 +1080,8 @@ tbody td {
 }
 
 .modal-form select,
-.modal-form input[type="number"] {
+.modal-form input[type="number"],
+.modal-form input[type="text"] {
   width: 100%;
   background: var(--surface-2);
   border: 1px solid var(--border-mid);
@@ -995,9 +1096,58 @@ tbody td {
     box-shadow 0.2s;
 }
 .modal-form select:focus,
-.modal-form input[type="number"]:focus {
+.modal-form input[type="number"]:focus,
+.modal-form input[type="text"]:focus {
   border-color: var(--indigo);
   box-shadow: 0 0 0 3px var(--indigo-dim);
+}
+
+.members-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  background: var(--surface-2);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-mid);
+  max-height: 130px;
+  overflow-y: auto;
+}
+
+.member-check-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  padding: 3px 0;
+  user-select: none;
+}
+.member-check-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.btn-add-tag {
+  padding: 9px 15px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.2s;
+  white-space: nowrap;
+  font-family: var(--font-body);
+}
+.btn-add-tag:hover {
+  background: var(--surface-hover);
+  border-color: var(--indigo);
+  color: var(--indigo);
 }
 
 .modal-form .checkbox label {
@@ -1281,6 +1431,27 @@ tbody td {
   color: var(--text-1);
 }
 
+.person-detail-close {
+  background: var(--surface);
+  border: 1px solid var(--border-mid);
+  color: var(--text-2);
+  border-radius: var(--radius-xs);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+  align-self: center;
+}
+.person-detail-close:hover {
+  background: var(--surface-hover);
+  color: var(--text-1);
+  border-color: var(--border-strong);
+}
+
 /* Month timeline inside detail panel */
 .person-months-grid {
   display: grid;
@@ -1409,6 +1580,8 @@ tbody td {
   .btn-icon,
   .btn-export,
   .btn-print,
+  .btn-add,
+  .btn-new-month,
   .modal,
   .toast {
     display: none !important;

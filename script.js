@@ -1,22 +1,183 @@
 let paymentData = [];
 let barChart, pieChart;
 let currentTheme = localStorage.getItem("theme") || "dark";
+let db = null;
+
+// Initialize Firebase Firestore
+try {
+  if (
+    typeof firebase !== "undefined" &&
+    typeof firebaseConfig !== "undefined" &&
+    firebaseConfig.apiKey
+  ) {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    console.log("Firebase Firestore initialized! 🚀");
+  }
+} catch (err) {
+  console.warn("Firebase initialization notice:", err);
+}
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(currentTheme);
+  initModalEvents();
+  initDataStore();
+});
+
+// Update Database status badge in UI
+function updateDbStatusBadge(status, customText) {
+  const badge = document.getElementById("dbStatusBadge");
+  const textEl = document.getElementById("dbStatusText");
+  if (!badge || !textEl) return;
+
+  badge.className = `db-status-badge ${status}`;
+  if (customText) {
+    textEl.textContent = customText;
+  } else if (status === "online") {
+    textEl.textContent = "Live Cloud DB";
+  } else if (status === "syncing") {
+    textEl.textContent = "Syncing...";
+  } else if (status === "connecting") {
+    textEl.textContent = "Connecting...";
+  } else if (status === "offline") {
+    textEl.textContent = "Local Mode";
+  }
+}
+
+// Live Firestore Realtime Sync + Seeding
+function initDataStore() {
+  if (db) {
+    updateDbStatusBadge("connecting");
+    const docRef = db.collection("kisti").doc("payments");
+
+    // Real-time listener: instantly syncs on all devices!
+    docRef.onSnapshot(
+      async (docSnap) => {
+        if (
+          docSnap.exists &&
+          docSnap.data().records &&
+          docSnap.data().records.length > 0
+        ) {
+          paymentData = docSnap.data().records;
+          localStorage.setItem(
+            "kisti_payment_data",
+            JSON.stringify(paymentData),
+          );
+          initDashboard();
+          initCalculators();
+          updateDbStatusBadge("online");
+        } else {
+          // Empty database: Seed with current paymentData.json!
+          console.log(
+            "Database empty. Seeding initial data from paymentData.json...",
+          );
+          updateDbStatusBadge("syncing", "Seeding DB...");
+          try {
+            const res = await fetch("./paymentData.json");
+            const initialData = await res.json();
+            paymentData = initialData;
+            await docRef.set({
+              records: initialData,
+              lastUpdated: new Date().toISOString(),
+            });
+            localStorage.setItem(
+              "kisti_payment_data",
+              JSON.stringify(initialData),
+            );
+            initDashboard();
+            initCalculators();
+            updateDbStatusBadge("online");
+            showToast("Live Database initialized with your payment data! 🚀");
+          } catch (seedErr) {
+            console.error("Failed to seed initial data:", seedErr);
+            loadOfflineData();
+          }
+        }
+      },
+      (err) => {
+        console.error("Firestore real-time error:", err);
+        updateDbStatusBadge("offline");
+        showToast("Database error. Using local data.", "warning");
+        loadOfflineData();
+      },
+    );
+  } else {
+    updateDbStatusBadge("offline", "Local Mode");
+    loadOfflineData();
+  }
+}
+
+function loadOfflineData() {
+  const cachedData = localStorage.getItem("kisti_payment_data");
+  if (cachedData) {
+    try {
+      paymentData = JSON.parse(cachedData);
+      initDashboard();
+      initCalculators();
+      return;
+    } catch (err) {
+      console.warn("Corrupt cached data, reloading from file:", err);
+      localStorage.removeItem("kisti_payment_data");
+    }
+  }
 
   fetch("./paymentData.json")
     .then((res) => res.json())
     .then((data) => {
       paymentData = data;
       initDashboard();
+      initCalculators();
     })
     .catch((err) => {
       console.error("Failed to load data:", err);
       showToast("Failed to load payment data!", "error");
     });
-});
+}
+
+// Sync updates to cloud database
+async function savePaymentDataToStore() {
+  localStorage.setItem("kisti_payment_data", JSON.stringify(paymentData));
+
+  if (db) {
+    try {
+      updateDbStatusBadge("syncing");
+      await db.collection("kisti").doc("payments").set({
+        records: paymentData,
+        lastUpdated: new Date().toISOString(),
+      });
+      updateDbStatusBadge("online");
+    } catch (err) {
+      console.error("Failed to sync to Firestore:", err);
+      updateDbStatusBadge("offline");
+      showToast("Cloud sync failed. Saved locally.", "warning");
+    }
+  }
+}
+
+function initCalculators() {
+  calcFDR();
+  calcDPS();
+  calcKistiDPS();
+}
+
+function initModalEvents() {
+  const addModal = document.getElementById("addModal");
+  const newMonthModal = document.getElementById("newMonthModal");
+
+  window.addEventListener("click", (e) => {
+    if (e.target === addModal) closeModal();
+    if (e.target === newMonthModal) closeNewMonthModal();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (addModal && !addModal.classList.contains("hidden")) closeModal();
+      if (newMonthModal && !newMonthModal.classList.contains("hidden"))
+        closeNewMonthModal();
+    }
+  });
+}
 
 function initDashboard() {
   const yearFilter = document.getElementById("yearFilter");
@@ -25,6 +186,7 @@ function initDashboard() {
   const searchInput = document.getElementById("searchInput");
 
   // Populate years
+  yearFilter.innerHTML = "";
   paymentData.forEach((y) => {
     yearFilter.innerHTML += `<option value="${y.year}">${y.year}</option>`;
   });
@@ -72,10 +234,17 @@ function initDashboard() {
     );
   });
 
-  // Form submit for adding payment
-  document
-    .getElementById("addForm")
-    .addEventListener("submit", handleAddPayment);
+  // Form submit for adding single payment
+  const addForm = document.getElementById("addForm");
+  if (addForm) {
+    addForm.onsubmit = handleAddPayment;
+  }
+
+  // Form submit for starting new month/year
+  const newMonthForm = document.getElementById("newMonthForm");
+  if (newMonthForm) {
+    newMonthForm.onsubmit = handleCreateNewMonth;
+  }
 
   // Initial load
   const firstYear = paymentData[0].year;
@@ -108,6 +277,7 @@ function applyTheme(theme) {
 // 📊 Stats Cards
 function updateStats(year, month) {
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
   const months = yearData.months.filter(
     (m) => month === "all" || m.month === month,
   );
@@ -155,6 +325,7 @@ function updateStats(year, month) {
 // 📈 Progress Bar
 function updateProgress(year, month) {
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
   const months = yearData.months.filter(
     (m) => month === "all" || m.month === month,
   );
@@ -176,6 +347,7 @@ function updateProgress(year, month) {
 // 🔔 Due Alerts
 function checkDueAlerts(year, month) {
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
   const months = yearData.months.filter(
     (m) => month === "all" || m.month === month,
   );
@@ -207,7 +379,7 @@ function matchesSearch(name, query) {
   return name.toLowerCase().includes(query.toLowerCase());
 }
 
-// 🎨 Render Table with Search
+// 🎨 Render Accordion View with Search & Toggle
 function render(year, month, name, searchQuery) {
   const tableContainer = document.getElementById("tableContainer");
   tableContainer.innerHTML = "";
@@ -215,48 +387,143 @@ function render(year, month, name, searchQuery) {
     totalDue = 0;
 
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) {
+    tableContainer.innerHTML = `<div class="empty">No records found. Try adjusting filters.</div>`;
+    updateCharts(0, 0);
+    return;
+  }
 
-  yearData.months
+  const filteredMonths = yearData.months
     .filter((m) => month === "all" || m.month === month)
-    .forEach((m) => {
-      const filteredPayments = m.payments.filter(
+    .map((m) => ({
+      ...m,
+      payments: m.payments.filter(
         (p) =>
           (name === "all" || p.name === name) &&
           matchesSearch(p.name, searchQuery),
-      );
+      ),
+    }))
+    .filter((m) => m.payments.length > 0);
 
-      if (filteredPayments.length === 0) return;
-
-      let html = `
-        <h2>${m.month} (${year})</h2>
-        <div class="table-wrap">
-        <table>
-          <tr><th>Name</th><th>Amount</th><th>Status</th></tr>
-      `;
-
-      filteredPayments.forEach((p) => {
-        if (p.paid) totalPaid += p.amount;
-        else totalDue += p.amount;
-        html += `
-          <tr>
-            <td>${p.name}</td>
-            <td>${p.amount}</td>
-            <td class="${p.paid ? "paid" : "unpaid"}">
-              ${p.paid ? '<i class="fas fa-check"></i> Paid' : '<i class="fas fa-clock"></i> Pending'}
-            </td>
-          </tr>
-        `;
-      });
-
-      html += `</table></div>`;
-      tableContainer.innerHTML += html;
-    });
-
-  if (tableContainer.innerHTML === "") {
+  if (filteredMonths.length === 0) {
     tableContainer.innerHTML = `<div class="empty">No records found. Try adjusting filters.</div>`;
+    updateCharts(0, 0);
+    return;
   }
 
+  // Build accordion
+  const accordion = document.createElement("div");
+  accordion.className = "accordion";
+
+  filteredMonths.forEach((m, idx) => {
+    let mPaid = 0,
+      mDue = 0;
+    m.payments.forEach((p) => {
+      if (p.paid) {
+        mPaid += p.amount;
+        totalPaid += p.amount;
+      } else {
+        mDue += p.amount;
+        totalDue += p.amount;
+      }
+    });
+
+    // Auto-open the first accordion item
+    const isOpen = idx === 0;
+
+    const rows = m.payments
+      .map(
+        (p) => `
+      <tr>
+        <td>${p.name}</td>
+        <td style="font-variant-numeric:tabular-nums">৳${p.amount.toLocaleString()}</td>
+        <td>
+          <span class="${p.paid ? "badge-paid" : "badge-due"}"
+                onclick="togglePaymentStatus('${m.month}', '${p.name}', ${year})"
+                style="cursor: pointer;"
+                title="Click to toggle Paid/Pending">
+            <i class="fas fa-${p.paid ? "check" : "clock"}" style="font-size:9px"></i> ${p.paid ? "Paid" : "Pending"}
+          </span>
+        </td>
+      </tr>
+    `,
+      )
+      .join("");
+
+    const item = document.createElement("div");
+    item.className = `acc-item${isOpen ? " is-open" : ""}`;
+    item.innerHTML = `
+      <button class="acc-trigger" type="button" aria-expanded="${isOpen}">
+        <span class="acc-month-label">${m.month} <span style="font-weight:400;color:var(--text-3);font-size:12px">${year}</span></span>
+        <div class="acc-meta">
+          ${mPaid > 0 ? `<span class="acc-chip chip-paid">৳${mPaid.toLocaleString()} paid</span>` : ""}
+          ${mDue > 0 ? `<span class="acc-chip chip-due">৳${mDue.toLocaleString()} due</span>` : ""}
+          <span class="acc-chip chip-count">${m.payments.length} member${m.payments.length !== 1 ? "s" : ""}</span>
+        </div>
+        <span class="acc-chevron">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+      </button>
+      <div class="acc-body">
+        <div class="acc-body-inner">
+          <div class="acc-table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Toggle on header click
+    item.querySelector(".acc-trigger").addEventListener("click", () => {
+      const open = item.classList.toggle("is-open");
+      item.querySelector(".acc-trigger").setAttribute("aria-expanded", open);
+    });
+
+    accordion.appendChild(item);
+  });
+
+  tableContainer.appendChild(accordion);
   updateCharts(totalPaid, totalDue);
+}
+
+// ⚡ Quick toggle payment status on click
+function togglePaymentStatus(month, name, year) {
+  const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
+
+  const monthData = yearData.months.find((m) => m.month === month);
+  if (!monthData) return;
+
+  const payment = monthData.payments.find((p) => p.name === name);
+  if (!payment) return;
+
+  payment.paid = !payment.paid;
+  savePaymentDataToStore();
+
+  showToast(
+    `${name}'s payment for ${month} marked as ${payment.paid ? "Paid ✅" : "Pending ⏳"}`,
+  );
+
+  const monthFilter = document.getElementById("monthFilter");
+  const nameFilter = document.getElementById("nameFilter");
+  const searchInput = document.getElementById("searchInput");
+
+  render(year, monthFilter.value, nameFilter.value, searchInput.value);
+  renderPersonYearlySummary(year);
+  updateStats(year, monthFilter.value);
+  updateProgress(year, monthFilter.value);
+  checkDueAlerts(year, monthFilter.value);
+
+  // If details panel is open for this person, refresh it
+  const personDetails = document.getElementById("personDetails");
+  if (personDetails && personDetails.innerHTML.includes(name)) {
+    showPersonDetails(name, year);
+  }
 }
 
 // 📥 Export to CSV
@@ -264,6 +531,7 @@ function exportToCSV() {
   const year = document.getElementById("yearFilter").value;
   const month = document.getElementById("monthFilter").value;
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
 
   let csv = "Name,Month,Amount,Status,Year\n";
 
@@ -315,10 +583,33 @@ function showToast(message, type = "success") {
 // ➕ Modal Functions
 function populateModalFields(year) {
   const yearData = paymentData.find((y) => y.year == year);
-  const names = [
-    ...new Set(yearData.months.flatMap((m) => m.payments.map((p) => p.name))),
+  if (!yearData) return;
+
+  const allCalendarMonths = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
   ];
-  const months = yearData.months.map((m) => m.month);
+
+  const existingMonths = yearData.months.map((m) => m.month);
+  const months = [...new Set([...existingMonths, ...allCalendarMonths])];
+
+  const names = [
+    ...new Set(
+      paymentData.flatMap((y) =>
+        y.months.flatMap((m) => m.payments.map((p) => p.name)),
+      ),
+    ),
+  ];
 
   const nameSelect = document.getElementById("modalName");
   const monthSelect = document.getElementById("modalMonth");
@@ -329,9 +620,16 @@ function populateModalFields(year) {
   monthSelect.innerHTML = months
     .map((m) => `<option value="${m}">${m}</option>`)
     .join("");
+
+  const currentMonthFilter = document.getElementById("monthFilter").value;
+  if (currentMonthFilter && currentMonthFilter !== "all") {
+    monthSelect.value = currentMonthFilter;
+  }
 }
 
 function openModal() {
+  const year = document.getElementById("yearFilter").value;
+  populateModalFields(year);
   document.getElementById("addModal").classList.remove("hidden");
 }
 
@@ -343,20 +641,250 @@ function handleAddPayment(e) {
   e.preventDefault();
   const name = document.getElementById("modalName").value;
   const month = document.getElementById("modalMonth").value;
-  const amount = parseInt(document.getElementById("modalAmount").value);
+  const amount = parseInt(document.getElementById("modalAmount").value) || 0;
   const paid = document.getElementById("modalPaid").checked;
   const year = document.getElementById("yearFilter").value;
 
-  // Demo: Just show success (real app would save to backend/localStorage)
+  let yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) {
+    yearData = { year: parseInt(year), months: [] };
+    paymentData.unshift(yearData);
+  }
+
+  let monthData = yearData.months.find(
+    (m) => m.month.toLowerCase() === month.toLowerCase(),
+  );
+  if (!monthData) {
+    monthData = { month: month, payments: [] };
+    yearData.months.unshift(monthData);
+  }
+
+  const existing = monthData.payments.find(
+    (p) => p.name.toLowerCase() === name.toLowerCase(),
+  );
+  if (existing) {
+    existing.amount = amount;
+    existing.paid = paid;
+  } else {
+    monthData.payments.push({ name: name, amount: amount, paid: paid });
+  }
+
+  // Persist to Cloud & Local
+  savePaymentDataToStore();
+
   showToast(
-    `Payment added: ${name} - ৳${amount} (${paid ? "Paid" : "Pending"})`,
+    `Payment saved: ${name} - ৳${amount.toLocaleString()} (${paid ? "Paid" : "Pending"})`,
   );
   closeModal();
 
-  // Refresh view
-  render(year, month, "all", "");
-  updateStats(year, month);
-  updateProgress(year, month);
+  // Refresh views
+  populateMonths(year);
+  populateNames(year, month);
+  populateModalFields(year);
+
+  const monthFilter = document.getElementById("monthFilter");
+  const nameFilter = document.getElementById("nameFilter");
+  const searchInput = document.getElementById("searchInput");
+
+  render(year, monthFilter.value, nameFilter.value, searchInput.value);
+  renderPersonYearlySummary(year);
+  updateStats(year, monthFilter.value);
+  updateProgress(year, monthFilter.value);
+  checkDueAlerts(year, monthFilter.value);
+}
+
+// 🗓️ New Month / Year Functions
+const CALENDAR_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function getAllMemberNames() {
+  const names = new Set();
+  paymentData.forEach((y) => {
+    y.months.forEach((m) => {
+      m.payments.forEach((p) => names.add(p.name));
+    });
+  });
+  return Array.from(names);
+}
+
+function openNewMonthModal() {
+  const modal = document.getElementById("newMonthModal");
+  const yearInput = document.getElementById("newMonthYear");
+  const monthSelect = document.getElementById("newMonthSelect");
+  const amountInput = document.getElementById("newMonthAmount");
+
+  // Determine active year or latest recorded year
+  let currentYear = parseInt(document.getElementById("yearFilter").value);
+  if (!currentYear && paymentData.length > 0) currentYear = paymentData[0].year;
+  if (!currentYear) currentYear = new Date().getFullYear();
+
+  // Suggest next consecutive month
+  const yearData = paymentData.find((y) => y.year == currentYear);
+  let nextMonth = "January";
+  let targetYear = currentYear;
+
+  if (yearData && yearData.months.length > 0) {
+    const latestMonth = yearData.months[0].month;
+    const latestIdx = CALENDAR_MONTHS.indexOf(latestMonth);
+    if (latestIdx !== -1) {
+      if (latestIdx < 11) {
+        nextMonth = CALENDAR_MONTHS[latestIdx + 1];
+      } else {
+        nextMonth = "January";
+        targetYear = currentYear + 1;
+      }
+    }
+  }
+
+  yearInput.value = targetYear;
+
+  // Populate all 12 calendar months
+  monthSelect.innerHTML = CALENDAR_MONTHS.map(
+    (m) =>
+      `<option value="${m}" ${m === nextMonth ? "selected" : ""}>${m}</option>`,
+  ).join("");
+
+  amountInput.value = 1000;
+
+  // Populate active members
+  const members = getAllMemberNames();
+  renderNewMonthMembersCheckboxes(members);
+
+  modal.classList.remove("hidden");
+}
+
+function renderNewMonthMembersCheckboxes(members) {
+  const membersList = document.getElementById("newMonthMembersList");
+  membersList.innerHTML = members
+    .map(
+      (name) => `
+    <label class="member-check-item">
+      <input type="checkbox" name="newMonthMember" value="${name}" checked />
+      <span>${name}</span>
+    </label>
+  `,
+    )
+    .join("");
+}
+
+function addNewMemberTag() {
+  const input = document.getElementById("newExtraMemberInput");
+  const name = input.value.trim();
+  if (!name) return;
+
+  const membersList = document.getElementById("newMonthMembersList");
+  const existingCheckboxes = Array.from(
+    membersList.querySelectorAll('input[name="newMonthMember"]'),
+  ).map((i) => i.value.toLowerCase());
+
+  if (existingCheckboxes.includes(name.toLowerCase())) {
+    showToast(`${name} is already in the list!`, "warning");
+    input.value = "";
+    return;
+  }
+
+  const label = document.createElement("label");
+  label.className = "member-check-item";
+  label.innerHTML = `
+    <input type="checkbox" name="newMonthMember" value="${name}" checked />
+    <span>${name}</span>
+  `;
+  membersList.appendChild(label);
+  input.value = "";
+  showToast(`Added ${name} to list! ✅`);
+}
+
+function closeNewMonthModal() {
+  document.getElementById("newMonthModal").classList.add("hidden");
+}
+
+async function handleCreateNewMonth(e) {
+  e.preventDefault();
+  const year = parseInt(document.getElementById("newMonthYear").value);
+  const month = document.getElementById("newMonthSelect").value;
+  const amount =
+    parseInt(document.getElementById("newMonthAmount").value) || 1000;
+
+  const checkedMembers = Array.from(
+    document.querySelectorAll('input[name="newMonthMember"]:checked'),
+  ).map((i) => i.value);
+
+  if (checkedMembers.length === 0) {
+    showToast("Please select at least one member!", "warning");
+    return;
+  }
+
+  let yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) {
+    yearData = { year: year, months: [] };
+    paymentData.unshift(yearData);
+    paymentData.sort((a, b) => b.year - a.year);
+  }
+
+  // Check if month already exists in this year
+  const monthExists = yearData.months.some(
+    (m) => m.month.toLowerCase() === month.toLowerCase(),
+  );
+  if (monthExists) {
+    showToast(`${month} (${year}) already exists!`, "warning");
+    return;
+  }
+
+  // Build month record with all selected members set to Pending
+  const newPayments = checkedMembers.map((name) => ({
+    name: name,
+    amount: amount,
+    paid: false,
+  }));
+
+  const newMonthData = {
+    month: month,
+    payments: newPayments,
+  };
+
+  yearData.months.unshift(newMonthData);
+
+  // Sync to Cloud Database (Firebase) & LocalStorage
+  await savePaymentDataToStore();
+
+  showToast(
+    `${month} (${year}) started with ${checkedMembers.length} members! 🎉`,
+  );
+  closeNewMonthModal();
+
+  // Refresh entire UI
+  const yearFilter = document.getElementById("yearFilter");
+  const monthFilter = document.getElementById("monthFilter");
+  const searchInput = document.getElementById("searchInput");
+
+  yearFilter.innerHTML = "";
+  paymentData.forEach((y) => {
+    yearFilter.innerHTML += `<option value="${y.year}">${y.year}</option>`;
+  });
+  yearFilter.value = year;
+
+  populateMonths(year);
+  monthFilter.value = "all";
+  populateNames(year, "all");
+  populateModalFields(year);
+
+  render(year, "all", "all", searchInput.value);
+  renderPersonYearlySummary(year);
+  updateStats(year, "all");
+  updateProgress(year, "all");
+  checkDueAlerts(year, "all");
 }
 
 // 📊 Charts
@@ -451,76 +979,11 @@ function populateNames(year, month) {
 
 function renderPersonYearlySummary(year) {
   const yearData = paymentData.find((y) => y.year == year);
-  const personMap = {};
+  if (!yearData) {
+    document.getElementById("personSummary").innerHTML = "";
+    return;
+  }
 
-  yearData.months.forEach((month) => {
-    month.payments.forEach((p) => {
-      if (!personMap[p.name]) personMap[p.name] = { paid: 0, due: 0 };
-      if (p.paid) personMap[p.name].paid += p.amount;
-      else personMap[p.name].due += p.amount;
-    });
-  });
-
-  let html = `
-    <h2>Person-wise Yearly Summary (${year})</h2>
-    <div class="table-wrap">
-    <table class="summary-table">
-      <tr><th>Name</th><th>Total Paid</th><th>Total Due</th><th>Total</th><th>Paid %</th></tr>
-  `;
-
-  Object.keys(personMap).forEach((name) => {
-    const paid = personMap[name].paid;
-    const due = personMap[name].due;
-    const total = paid + due;
-    const paidPct = total ? ((paid / total) * 100).toFixed(1) : 0;
-    html += `
-      <tr>
-        <td class="clickable" onclick="showPersonDetails('${name}', ${year})">${name}</td>
-        <td class="summary-paid">৳${paid}</td>
-        <td class="summary-due">৳${due}</td>
-        <td>৳${total}</td>
-        <td>${paidPct}%</td>
-      </tr>
-    `;
-  });
-
-  html += `</table></div>`;
-  document.getElementById("personSummary").innerHTML = html;
-  document.getElementById("personDetails").innerHTML = "";
-}
-
-function showPersonDetails(name, year) {
-  const yearData = paymentData.find((y) => y.year == year);
-  let html = `
-    <h3>Monthly Breakdown: ${name} (${year})</h3>
-    <div class="table-wrap">
-    <table>
-      <tr><th>Month</th><th>Amount</th><th>Status</th></tr>
-  `;
-
-  yearData.months.forEach((month) => {
-    const payment = month.payments.find((p) => p.name === name);
-    if (payment) {
-      html += `
-        <tr>
-          <td>${month.month}</td>
-          <td>৳${payment.amount}</td>
-          <td class="${payment.paid ? "detail-paid" : "detail-due"}">
-            ${payment.paid ? '<i class="fas fa-check"></i> Paid' : '<i class="fas fa-clock"></i> Pending'}
-          </td>
-        </tr>
-      `;
-    }
-  });
-
-  html += `</table></div>`;
-  document.getElementById("personDetails").innerHTML = html;
-  document
-    .getElementById("personDetails")
-    .scrollIntoView({ behavior: "smooth" });
-}
-function renderPersonYearlySummary(year) {
-  const yearData = paymentData.find((y) => y.year == year);
   const personMap = {};
 
   yearData.months.forEach((month) => {
@@ -578,8 +1041,14 @@ function renderPersonYearlySummary(year) {
   document.getElementById("personDetails").innerHTML = "";
 }
 
+function closePersonDetails() {
+  document.getElementById("personDetails").innerHTML = "";
+}
+
 function showPersonDetails(name, year) {
   const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
+
   const initials = name
     .split(" ")
     .map((w) => w[0])
@@ -599,7 +1068,7 @@ function showPersonDetails(name, year) {
   const grandTotal = totalPaid + totalDue;
   const pct = grandTotal ? Math.round((totalPaid / grandTotal) * 100) : 0;
 
-  // Month tiles
+  // Month tiles (clickable to toggle status)
   const tiles = yearData.months
     .map((month) => {
       const payment = month.payments.find((p) => p.name === name);
@@ -607,7 +1076,10 @@ function showPersonDetails(name, year) {
 
       const isPaid = payment.paid;
       return `
-      <div class="month-tile ${isPaid ? "is-paid" : "is-due"}">
+      <div class="month-tile ${isPaid ? "is-paid" : "is-due"}"
+           onclick="togglePaymentStatus('${month.month}', '${name}', ${year})"
+           style="cursor: pointer;"
+           title="Click to toggle Paid/Pending">
         <div class="month-tile-name">${month.month}</div>
         <div class="month-tile-amount">৳${payment.amount.toLocaleString()}</div>
         <div class="month-tile-status ${isPaid ? "s-paid" : "s-due"}">
@@ -642,6 +1114,9 @@ function showPersonDetails(name, year) {
             <div class="person-kpi-label">Total · ${pct}%</div>
             <div class="person-kpi-val kpi-total">৳${grandTotal.toLocaleString()}</div>
           </div>
+          <button class="person-detail-close" onclick="closePersonDetails()" title="Close details">
+            <i class="fas fa-times"></i>
+          </button>
         </div>
       </div>
  
@@ -655,115 +1130,6 @@ function showPersonDetails(name, year) {
   document
     .getElementById("personDetails")
     .scrollIntoView({ behavior: "smooth", block: "start" });
-}
-// ─────────────────────────────────────────────────────────────
-// DROP-IN REPLACEMENT for the render() function in script.js
-// Replace the entire render() function with this one.
-// ─────────────────────────────────────────────────────────────
-
-function render(year, month, name, searchQuery) {
-  const tableContainer = document.getElementById("tableContainer");
-  tableContainer.innerHTML = "";
-  let totalPaid = 0,
-    totalDue = 0;
-
-  const yearData = paymentData.find((y) => y.year == year);
-
-  const filteredMonths = yearData.months
-    .filter((m) => month === "all" || m.month === month)
-    .map((m) => ({
-      ...m,
-      payments: m.payments.filter(
-        (p) =>
-          (name === "all" || p.name === name) &&
-          matchesSearch(p.name, searchQuery),
-      ),
-    }))
-    .filter((m) => m.payments.length > 0);
-
-  if (filteredMonths.length === 0) {
-    tableContainer.innerHTML = `<div class="empty">No records found. Try adjusting filters.</div>`;
-    updateCharts(0, 0);
-    return;
-  }
-
-  // Build accordion
-  const accordion = document.createElement("div");
-  accordion.className = "accordion";
-
-  filteredMonths.forEach((m, idx) => {
-    let mPaid = 0,
-      mDue = 0;
-    m.payments.forEach((p) => {
-      if (p.paid) {
-        mPaid += p.amount;
-        totalPaid += p.amount;
-      } else {
-        mDue += p.amount;
-        totalDue += p.amount;
-      }
-    });
-
-    // Auto-open the first (most recent) accordion item
-    const isOpen = idx === 0;
-
-    const rows = m.payments
-      .map(
-        (p) => `
-      <tr>
-        <td>${p.name}</td>
-        <td style="font-variant-numeric:tabular-nums">৳${p.amount.toLocaleString()}</td>
-        <td>
-          ${
-            p.paid
-              ? `<span class="badge-paid"><i class="fas fa-check" style="font-size:9px"></i> Paid</span>`
-              : `<span class="badge-due"><i class="fas fa-clock" style="font-size:9px"></i> Pending</span>`
-          }
-        </td>
-      </tr>
-    `,
-      )
-      .join("");
-
-    const item = document.createElement("div");
-    item.className = `acc-item${isOpen ? " is-open" : ""}`;
-    item.innerHTML = `
-      <button class="acc-trigger" type="button" aria-expanded="${isOpen}">
-        <span class="acc-month-label">${m.month} <span style="font-weight:400;color:var(--text-3);font-size:12px">${year}</span></span>
-        <div class="acc-meta">
-          ${mPaid > 0 ? `<span class="acc-chip chip-paid">৳${mPaid.toLocaleString()} paid</span>` : ""}
-          ${mDue > 0 ? `<span class="acc-chip chip-due">৳${mDue.toLocaleString()} due</span>` : ""}
-          <span class="acc-chip chip-count">${m.payments.length} member${m.payments.length !== 1 ? "s" : ""}</span>
-        </div>
-        <span class="acc-chevron">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </span>
-      </button>
-      <div class="acc-body">
-        <div class="acc-body-inner">
-          <div class="acc-table-wrap">
-            <table>
-              <thead><tr><th>Name</th><th>Amount</th><th>Status</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Toggle on header click
-    item.querySelector(".acc-trigger").addEventListener("click", () => {
-      const open = item.classList.toggle("is-open");
-      item.querySelector(".acc-trigger").setAttribute("aria-expanded", open);
-    });
-
-    accordion.appendChild(item);
-  });
-
-  tableContainer.appendChild(accordion);
-  updateCharts(totalPaid, totalDue);
 }
 function switchCalcTab(tab) {
   document
@@ -919,9 +1285,8 @@ function calcKistiDPS() {
   );
 }
 
-// Auto-run on load
-document.addEventListener("DOMContentLoaded", () => {
-  calcFDR();
-  calcDPS();
-  calcKistiDPS();
-});
+// Helper to reset to original json data if needed
+function resetToDefaultData() {
+  localStorage.removeItem("kisti_payment_data");
+  location.reload();
+}

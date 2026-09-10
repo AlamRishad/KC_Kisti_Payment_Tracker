@@ -73,11 +73,35 @@
               Kisti Payment Dashboard <span>Monthly installment tracker</span>
             </h1>
           </div>
+          <div
+            id="dbStatusBadge"
+            class="db-status-badge connecting"
+            title="Live Database Status"
+          >
+            <span class="db-dot"></span>
+            <span id="dbStatusText">Connecting...</span>
+          </div>
         </div>
         <div class="header-actions">
           <!-- Theme Toggle -->
           <button class="btn-icon" id="themeToggle" title="Toggle Theme">
             <i class="fas fa-moon"></i>
+          </button>
+          <!-- Add Payment -->
+          <button
+            class="btn-add"
+            onclick="openModal()"
+            title="Add / Update Single Payment"
+          >
+            <i class="fas fa-plus-circle"></i> Add Payment
+          </button>
+          <!-- Start New Month -->
+          <button
+            class="btn-new-month"
+            onclick="openNewMonthModal()"
+            title="Start New Month / Year with All Members"
+          >
+            <i class="fas fa-calendar-plus"></i> New Month
           </button>
           <!-- Export CSV -->
           <button class="btn-export" onclick="exportToCSV()">
@@ -403,7 +427,6 @@
         </div>
         <!-- /panel-dps -->
       </div>
-      <
     </div>
 
     <!-- Add Payment Modal (Demo) -->
@@ -434,6 +457,87 @@
       </div>
     </div>
 
+    <!-- 🗓️ Start New Month / Year Modal -->
+    <div id="newMonthModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3><i class="fas fa-calendar-plus"></i> Start New Month</h3>
+          <button class="modal-close" onclick="closeNewMonthModal()">
+            &times;
+          </button>
+        </div>
+        <form id="newMonthForm" class="modal-form">
+          <div style="display: flex; gap: 12px">
+            <div class="form-group" style="flex: 1">
+              <label>Year</label>
+              <input
+                type="number"
+                id="newMonthYear"
+                min="2020"
+                max="2050"
+                required
+              />
+            </div>
+            <div class="form-group" style="flex: 1.4">
+              <label>Month</label>
+              <select id="newMonthSelect" required></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Default Amount per Member (৳)</label>
+            <input
+              type="number"
+              id="newMonthAmount"
+              value="1000"
+              min="100"
+              step="100"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 6px;
+              "
+            >
+              <span>Active Members</span>
+              <small style="color: var(--text-3); font-weight: 400"
+                >All start as Pending</small
+              >
+            </label>
+            <div id="newMonthMembersList" class="members-checkbox-grid"></div>
+          </div>
+          <div class="form-group" style="margin-top: 6px">
+            <label>Add Extra Member (Optional)</label>
+            <div style="display: flex; gap: 8px">
+              <input
+                type="text"
+                id="newExtraMemberInput"
+                placeholder="New member name..."
+              />
+              <button
+                type="button"
+                class="btn-add-tag"
+                onclick="addNewMemberTag()"
+              >
+                + Add
+              </button>
+            </div>
+          </div>
+          <button type="submit" class="btn-submit" style="margin-top: 14px">
+            <i class="fas fa-check-circle"></i> Create Month for All Members
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 🔥 Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
     <script src="script.js"></script>
   </body>
 </html>
