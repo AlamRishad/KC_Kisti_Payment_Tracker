@@ -3,6 +3,10 @@ let barChart, pieChart;
 let currentTheme = localStorage.getItem("theme") || "dark";
 let db = null;
 
+// 🔐 Admin & Role-Based Access Control
+const ADMIN_PASSWORD = "admin123"; // Change this default password as desired
+let currentRole = sessionStorage.getItem("kisti_user_role") || "member";
+
 // Initialize Firebase Firestore
 try {
   if (
@@ -21,6 +25,7 @@ try {
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(currentTheme);
+  initRoleSystem();
   initModalEvents();
   initDataStore();
 });
@@ -131,7 +136,13 @@ function loadOfflineData() {
     })
     .catch((err) => {
       console.error("Failed to load data:", err);
-      showToast("Failed to load payment data!", "error");
+      showToast(
+        "Failed to load payment data! Loading empty dashboard.",
+        "error",
+      );
+      paymentData = [];
+      initDashboard();
+      initCalculators();
     });
 }
 
@@ -164,10 +175,12 @@ function initCalculators() {
 function initModalEvents() {
   const addModal = document.getElementById("addModal");
   const newMonthModal = document.getElementById("newMonthModal");
+  const roleAuthModal = document.getElementById("roleAuthModal");
 
   window.addEventListener("click", (e) => {
     if (e.target === addModal) closeModal();
     if (e.target === newMonthModal) closeNewMonthModal();
+    if (e.target === roleAuthModal) closeAuthModal();
   });
 
   window.addEventListener("keydown", (e) => {
@@ -175,8 +188,136 @@ function initModalEvents() {
       if (addModal && !addModal.classList.contains("hidden")) closeModal();
       if (newMonthModal && !newMonthModal.classList.contains("hidden"))
         closeNewMonthModal();
+      if (roleAuthModal && !roleAuthModal.classList.contains("hidden"))
+        closeAuthModal();
     }
   });
+}
+
+// 🔐 Role System Functions
+function initRoleSystem() {
+  updateRoleUI();
+
+  // If user hasn't chosen a role yet in this browser session, show the access modal
+  const hasPrompted = sessionStorage.getItem("kisti_role_prompted");
+  if (!hasPrompted && !sessionStorage.getItem("kisti_user_role")) {
+    openAuthModal();
+  }
+}
+
+function updateRoleUI() {
+  document.body.dataset.role = currentRole;
+  const badge = document.getElementById("roleBadge");
+  const authSwitchBtn = document.getElementById("authSwitchBtn");
+  const authSwitchBtnText = document.getElementById("authSwitchBtnText");
+
+  if (badge) {
+    if (currentRole === "admin") {
+      badge.className = "role-badge admin";
+      badge.innerHTML =
+        '<i class="fas fa-shield-alt"></i> <span>Admin Mode</span>';
+    } else {
+      badge.className = "role-badge member";
+      badge.innerHTML =
+        '<i class="fas fa-eye"></i> <span>Member (View Only)</span>';
+    }
+  }
+
+  if (authSwitchBtn && authSwitchBtnText) {
+    if (currentRole === "admin") {
+      authSwitchBtnText.textContent = "Logout";
+      const icon = authSwitchBtn.querySelector("i");
+      if (icon) icon.className = "fas fa-sign-out-alt";
+      authSwitchBtn.title = "Logout from Admin mode";
+    } else {
+      authSwitchBtnText.textContent = "Admin Login";
+      const icon = authSwitchBtn.querySelector("i");
+      if (icon) icon.className = "fas fa-lock";
+      authSwitchBtn.title = "Login as Admin to edit data";
+    }
+  }
+
+  // Refresh display if data is loaded
+  if (paymentData && paymentData.length > 0) {
+    const yearFilter = document.getElementById("yearFilter");
+    if (yearFilter && yearFilter.value) {
+      const monthFilter = document.getElementById("monthFilter");
+      const nameFilter = document.getElementById("nameFilter");
+      const searchInput = document.getElementById("searchInput");
+      const y = yearFilter.value;
+      const m = monthFilter ? monthFilter.value : "all";
+      const n = nameFilter ? nameFilter.value : "all";
+      const q = searchInput ? searchInput.value : "";
+
+      render(y, m, n, q);
+      renderPersonYearlySummary(y);
+      updateStats(y, m);
+      updateProgress(y, m);
+      checkDueAlerts(y, m);
+    } else {
+      initDashboard();
+    }
+  }
+}
+
+function openAuthModal() {
+  const modal = document.getElementById("roleAuthModal");
+  const errEl = document.getElementById("adminLoginError");
+  const passInput = document.getElementById("adminPasswordInput");
+  if (errEl) errEl.classList.add("hidden");
+  if (passInput) passInput.value = "";
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeAuthModal() {
+  const modal = document.getElementById("roleAuthModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function enterAsMember() {
+  currentRole = "member";
+  sessionStorage.setItem("kisti_user_role", "member");
+  sessionStorage.setItem("kisti_role_prompted", "true");
+  updateRoleUI();
+  closeAuthModal();
+  showToast("Entered as General Member (View-Only mode) 👁️");
+}
+
+function handleAdminLogin(e) {
+  if (e) e.preventDefault();
+  const passInput = document.getElementById("adminPasswordInput");
+  const errEl = document.getElementById("adminLoginError");
+  const password = passInput ? passInput.value.trim() : "";
+
+  if (password === ADMIN_PASSWORD) {
+    currentRole = "admin";
+    sessionStorage.setItem("kisti_user_role", "admin");
+    sessionStorage.setItem("kisti_role_prompted", "true");
+    updateRoleUI();
+    closeAuthModal();
+    showToast("Logged in as Admin! Full edit access unlocked 🛡️");
+  } else {
+    if (errEl) errEl.classList.remove("hidden");
+    if (passInput) {
+      passInput.focus();
+      passInput.select();
+    }
+  }
+}
+
+function logoutRole() {
+  currentRole = "member";
+  sessionStorage.setItem("kisti_user_role", "member");
+  updateRoleUI();
+  showToast("Logged out of Admin. Switched to Member view 👁️");
+}
+
+function handleAuthSwitchClick() {
+  if (currentRole === "admin") {
+    logoutRole();
+  } else {
+    openAuthModal();
+  }
 }
 
 function initDashboard() {
@@ -383,10 +524,31 @@ function matchesSearch(name, query) {
 function render(year, month, name, searchQuery) {
   const tableContainer = document.getElementById("tableContainer");
   tableContainer.innerHTML = "";
+
+  const yearFilter = document.getElementById("yearFilter");
+  const monthFilter = document.getElementById("monthFilter");
+  const nameFilter = document.getElementById("nameFilter");
+  const searchInput = document.getElementById("searchInput");
+
+  const targetYear =
+    year ||
+    (yearFilter && yearFilter.value ? yearFilter.value : null) ||
+    (paymentData && paymentData[0] ? paymentData[0].year : null);
+  const targetMonth =
+    month || (monthFilter && monthFilter.value ? monthFilter.value : "all");
+  const targetName =
+    name || (nameFilter && nameFilter.value ? nameFilter.value : "all");
+  const targetSearch =
+    searchQuery !== undefined
+      ? searchQuery
+      : searchInput
+        ? searchInput.value
+        : "";
+
   let totalPaid = 0,
     totalDue = 0;
 
-  const yearData = paymentData.find((y) => y.year == year);
+  const yearData = paymentData.find((y) => y.year == targetYear);
   if (!yearData) {
     tableContainer.innerHTML = `<div class="empty">No records found. Try adjusting filters.</div>`;
     updateCharts(0, 0);
@@ -394,13 +556,13 @@ function render(year, month, name, searchQuery) {
   }
 
   const filteredMonths = yearData.months
-    .filter((m) => month === "all" || m.month === month)
+    .filter((m) => targetMonth === "all" || m.month === targetMonth)
     .map((m) => ({
       ...m,
       payments: m.payments.filter(
         (p) =>
-          (name === "all" || p.name === name) &&
-          matchesSearch(p.name, searchQuery),
+          (targetName === "all" || p.name === targetName) &&
+          matchesSearch(p.name, targetSearch),
       ),
     }))
     .filter((m) => m.payments.length > 0);
@@ -439,9 +601,9 @@ function render(year, month, name, searchQuery) {
         <td style="font-variant-numeric:tabular-nums">৳${p.amount.toLocaleString()}</td>
         <td>
           <span class="${p.paid ? "badge-paid" : "badge-due"}"
-                onclick="togglePaymentStatus('${m.month}', '${p.name}', ${year})"
-                style="cursor: pointer;"
-                title="Click to toggle Paid/Pending">
+                onclick="togglePaymentStatus('${m.month}', '${p.name}', ${targetYear})"
+                style="${currentRole === "admin" ? "cursor: pointer;" : "cursor: default;"}"
+                title="${currentRole === "admin" ? "Click to toggle Paid/Pending" : "Member Mode (View Only)"}">
             <i class="fas fa-${p.paid ? "check" : "clock"}" style="font-size:9px"></i> ${p.paid ? "Paid" : "Pending"}
           </span>
         </td>
@@ -454,34 +616,38 @@ function render(year, month, name, searchQuery) {
     item.className = `acc-item${isOpen ? " is-open" : ""}`;
     item.innerHTML = `
       <button class="acc-trigger" type="button" aria-expanded="${isOpen}">
-        <span class="acc-month-label">${m.month} <span style="font-weight:400;color:var(--text-3);font-size:12px">${year}</span></span>
+        <span class="acc-month-label">${m.month} <span style="font-weight:400;color:var(--text-3);font-size:12px">${targetYear}</span></span>
         <div class="acc-meta">
           ${mPaid > 0 ? `<span class="acc-chip chip-paid">৳${mPaid.toLocaleString()} paid</span>` : ""}
           ${mDue > 0 ? `<span class="acc-chip chip-due">৳${mDue.toLocaleString()} due</span>` : ""}
-          <span class="acc-chip chip-count">${m.payments.length} member${m.payments.length !== 1 ? "s" : ""}</span>
+          <span class="acc-chevron"><i class="fas fa-chevron-down"></i></span>
         </div>
-        <span class="acc-chevron">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </span>
       </button>
       <div class="acc-body">
-        <div class="acc-body-inner">
-          <div class="acc-table-wrap">
-            <table>
-              <thead><tr><th>Name</th><th>Amount</th><th>Status</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
         </div>
       </div>
     `;
 
-    // Toggle on header click
-    item.querySelector(".acc-trigger").addEventListener("click", () => {
-      const open = item.classList.toggle("is-open");
-      item.querySelector(".acc-trigger").setAttribute("aria-expanded", open);
+    // Accordion toggle handler
+    const trigger = item.querySelector(".acc-trigger");
+    trigger.addEventListener("click", () => {
+      const currentlyOpen = item.classList.contains("is-open");
+      // Optional: close siblings if you want single-open behaviour; here we allow multiple
+      item.classList.toggle("is-open", !currentlyOpen);
+      trigger.setAttribute("aria-expanded", String(!currentlyOpen));
     });
 
     accordion.appendChild(item);
@@ -493,6 +659,11 @@ function render(year, month, name, searchQuery) {
 
 // ⚡ Quick toggle payment status on click
 function togglePaymentStatus(month, name, year) {
+  if (currentRole !== "admin") {
+    showToast("Admin access required to modify payment status! 🔒", "warning");
+    return;
+  }
+
   const yearData = paymentData.find((y) => y.year == year);
   if (!yearData) return;
 
@@ -628,6 +799,10 @@ function populateModalFields(year) {
 }
 
 function openModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required to add/edit payments! 🔒", "warning");
+    return;
+  }
   const year = document.getElementById("yearFilter").value;
   populateModalFields(year);
   document.getElementById("addModal").classList.remove("hidden");
@@ -639,6 +814,10 @@ function closeModal() {
 
 function handleAddPayment(e) {
   e.preventDefault();
+  if (currentRole !== "admin") {
+    showToast("Admin access required to save payments! 🔒", "error");
+    return;
+  }
   const name = document.getElementById("modalName").value;
   const month = document.getElementById("modalMonth").value;
   const amount = parseInt(document.getElementById("modalAmount").value) || 0;
@@ -720,6 +899,10 @@ function getAllMemberNames() {
 }
 
 function openNewMonthModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required to start a new month! 🔒", "warning");
+    return;
+  }
   const modal = document.getElementById("newMonthModal");
   const yearInput = document.getElementById("newMonthYear");
   const monthSelect = document.getElementById("newMonthSelect");
@@ -812,6 +995,10 @@ function closeNewMonthModal() {
 
 async function handleCreateNewMonth(e) {
   e.preventDefault();
+  if (currentRole !== "admin") {
+    showToast("Admin access required to create a new month! 🔒", "error");
+    return;
+  }
   const year = parseInt(document.getElementById("newMonthYear").value);
   const month = document.getElementById("newMonthSelect").value;
   const amount =
@@ -1078,8 +1265,8 @@ function showPersonDetails(name, year) {
       return `
       <div class="month-tile ${isPaid ? "is-paid" : "is-due"}"
            onclick="togglePaymentStatus('${month.month}', '${name}', ${year})"
-           style="cursor: pointer;"
-           title="Click to toggle Paid/Pending">
+           style="${currentRole === "admin" ? "cursor: pointer;" : "cursor: default;"}"
+           title="${currentRole === "admin" ? "Click to toggle Paid/Pending" : "Member Mode (View Only)"}">
         <div class="month-tile-name">${month.month}</div>
         <div class="month-tile-amount">৳${payment.amount.toLocaleString()}</div>
         <div class="month-tile-status ${isPaid ? "s-paid" : "s-due"}">
