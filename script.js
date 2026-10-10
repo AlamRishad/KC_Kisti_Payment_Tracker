@@ -7,11 +7,36 @@ let db = null;
 let lastFetchedAt = null;
 let lastModifiedAt = null;
 let isSubmitting = false;
+let isOnline = navigator.onLine !== false;
 
 // 🔐 Admin & Role-Based Access Control
-const ADMIN_PASSWORD = "admin123"; // Change this default password as desired
+const ADMIN_PASSWORD = "admin123";
 let currentRole = sessionStorage.getItem("kisti_user_role") || "member";
 let activeNavTab = sessionStorage.getItem("kisti_active_tab") || "overview";
+let activeReportsSubTab = sessionStorage.getItem("kisti_reports_subtab") || "analytics";
+
+// 💰 Fund Cashbook, Member Credit & Monthly Reconciliation State
+let fundCashbook = {
+  accounts: [
+    { id: "bank", name: "Islami Bank Bangladesh", type: "bank", balance: 0, openingBalance: 0, openingDate: "2026-01-01" },
+    { id: "cash", name: "Cash in Hand", type: "cash", balance: 0, openingBalance: 0, openingDate: "2026-01-01" },
+    { id: "bkash", name: "bKash Mobile Wallet", type: "wallet", balance: 0, openingBalance: 0, openingDate: "2026-01-01" },
+    { id: "nagad", name: "Nagad Mobile Wallet", type: "wallet", balance: 0, openingBalance: 0, openingDate: "2026-01-01" },
+  ],
+  entries: [],
+  openingBalances: {
+    date: "2026-01-01",
+    bank: 0,
+    cash: 0,
+    bkash: 0,
+    nagad: 0,
+    notes: "Baseline opening setup",
+  },
+};
+let memberCreditLedger = {};
+let monthlyReconciliations = [];
+let deferredPwaPrompt = null;
+let pendingBackupJson = null;
 
 // 🎛️ Shared Filter State
 const filterState = {
@@ -60,10 +85,19 @@ document.addEventListener("DOMContentLoaded", () => {
   initModalEvents();
   initNavigationTabs();
   initCalculators();
+  initPwaAndServiceWorker();
   initDataStore();
 });
 
-// ── Timezone & Currency Helpers ─────────────────────────────────
+// ── Currency Exact Arithmetic (Poisha Integer Math) ───────────────
+function toPoisha(bdt) {
+  return Math.round((Number(bdt) || 0) * 100);
+}
+function fromPoisha(poisha) {
+  return Math.round(Number(poisha) || 0) / 100;
+}
+
+// ── Timezone & Audit Timestamp Formatting ─────────────────────────
 
 // Return current date YYYY-MM-DD in Asia/Dhaka
 function getDhakaDateString(dateObj = new Date()) {
@@ -111,6 +145,52 @@ function getDhakaShortTime(dateObj = new Date()) {
   }
 }
 
+// 🛡️ Safe Universal Audit Timestamp Formatter
+// Formats as "10 Oct 2026, 10:52 PM BD time" or "Time not recorded"
+function formatAuditTimestamp(raw) {
+  if (!raw) return "Time not recorded";
+  try {
+    let dt = null;
+    if (typeof raw === "object" && typeof raw.toDate === "function") {
+      dt = raw.toDate();
+    } else if (typeof raw === "object" && typeof raw.seconds === "number") {
+      dt = new Date(raw.seconds * 1000 + (raw.nanoseconds ? raw.nanoseconds / 1e6 : 0));
+    } else if (raw instanceof Date) {
+      dt = raw;
+    } else if (typeof raw === "number") {
+      dt = new Date(raw);
+    } else if (typeof raw === "string") {
+      dt = new Date(raw);
+      if (isNaN(dt.getTime())) {
+        const clean = raw.replace(" BD time", "").trim();
+        dt = new Date(clean);
+      }
+    }
+
+    if (!dt || isNaN(dt.getTime())) {
+      return "Time not recorded";
+    }
+
+    const datePart = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Dhaka",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(dt);
+
+    const timePart = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Dhaka",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(dt);
+
+    return `${datePart}, ${timePart} BD time`;
+  } catch (e) {
+    return "Time not recorded";
+  }
+}
+
 // Consistent Currency Formatting in BDT (৳)
 function fmtBDT(amount) {
   const num = Math.round(Number(amount) || 0);
@@ -123,6 +203,108 @@ function fmtPct(rate) {
   return num.toFixed(1) + "%";
 }
 
+// ── PWA & Offline Support ─────────────────────────────────────────
+function initPwaAndServiceWorker() {
+  // Register Service Worker
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker
+      .register("./sw.js")
+      .then((reg) => {
+        console.log("Service Worker registered successfully:", reg.scope);
+        reg.addEventListener("updatefound", () => {
+          const newWorker = reg.installing;
+          newWorker.addEventListener("statechange", () => {
+            if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+              showToast("New app version available! Refresh to update. 🚀", "info");
+            }
+          });
+        });
+      })
+      .catch((err) => {
+        console.warn("Service Worker registration notice:", err);
+      });
+  }
+
+  // Capture beforeinstallprompt event
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPwaPrompt = e;
+    const headerBtn = document.getElementById("pwaInstallHeaderBtn");
+    const menuGroup = document.getElementById("mobileMenuPwaGroup");
+    if (headerBtn) headerBtn.classList.remove("hidden");
+    if (menuGroup) menuGroup.classList.remove("hidden");
+  });
+
+  // App installed event
+  window.addEventListener("appinstalled", () => {
+    deferredPwaPrompt = null;
+    const headerBtn = document.getElementById("pwaInstallHeaderBtn");
+    if (headerBtn) headerBtn.classList.add("hidden");
+    showToast("KC-Kisti App installed successfully! 🎉");
+  });
+
+  // Online / Offline Listeners
+  window.addEventListener("online", () => {
+    isOnline = true;
+    updateOnlineStatusUI();
+    showToast("Connection restored! You are back online. 🌐");
+  });
+
+  window.addEventListener("offline", () => {
+    isOnline = false;
+    updateOnlineStatusUI();
+    showToast("Connection lost. Operating in offline read-only mode.", "warning");
+  });
+
+  updateOnlineStatusUI();
+}
+
+function updateOnlineStatusUI() {
+  const banner = document.getElementById("offlineBanner");
+  const bannerText = document.getElementById("offlineBannerText");
+  if (!banner) return;
+
+  if (navigator.onLine === false) {
+    banner.classList.remove("hidden");
+    banner.style.display = "";
+    if (bannerText) {
+      bannerText.textContent = `Offline Mode · Viewing cached data (${lastFetchedAt ? formatAuditTimestamp(lastFetchedAt) : "Local"}). Financial modifications are disabled until online.`;
+    }
+  } else {
+    banner.classList.add("hidden");
+    banner.style.display = "none";
+  }
+}
+
+// PWA Trigger
+function triggerPwaInstall() {
+  if (deferredPwaPrompt) {
+    deferredPwaPrompt.prompt();
+    deferredPwaPrompt.userChoice.then((choiceResult) => {
+      if (choiceResult.outcome === "accepted") {
+        console.log("User accepted PWA installation");
+      }
+      deferredPwaPrompt = null;
+    });
+  } else {
+    // Helpful guidance for iOS Safari or browsers without beforeinstallprompt
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isIOS) {
+      alert("To install on iOS: Tap the Share button (square with arrow) at the bottom of Safari, then choose 'Add to Home Screen'. 📲");
+    } else {
+      alert("To install this app, open your browser menu (⋮) and select 'Install app' or 'Add to Home screen'. 📲");
+    }
+  }
+}
+
+function checkOnlineForFinancialWrite() {
+  if (!navigator.onLine) {
+    showToast("Cannot perform financial write while offline. Please connect to the internet.", "error");
+    return false;
+  }
+  return true;
+}
+
 // ── Data Normalization & Backward Compatibility ─────────────────
 // Ensures legacy records without paymentsList or paidAmount behave consistently
 function normalizePaymentRecord(payment, monthDueDate = null) {
@@ -130,10 +312,9 @@ function normalizePaymentRecord(payment, monthDueDate = null) {
   let paidAmount = 0;
 
   if (Array.isArray(payment.paymentsList) && payment.paymentsList.length > 0) {
-    paidAmount = payment.paymentsList.reduce(
-      (sum, pmt) => sum + (Number(pmt.amount) || 0),
-      0,
-    );
+    paidAmount = payment.paymentsList
+      .filter((tx) => tx.status !== "voided")
+      .reduce((sum, pmt) => sum + (Number(pmt.amount) || 0), 0);
   } else if (payment.paidAmount !== undefined && payment.paidAmount !== null) {
     paidAmount = Number(payment.paidAmount) || 0;
   } else {
@@ -141,28 +322,31 @@ function normalizePaymentRecord(payment, monthDueDate = null) {
     paidAmount = payment.paid ? expected : 0;
   }
 
-  const balance = expected - paidAmount;
+  const balance = Math.max(0, expected - paidAmount);
+  const overpayment = Math.max(0, paidAmount - expected);
   let status = "unpaid";
   let daysOverdue = 0;
+  let isOverdue = false;
 
   if (paidAmount >= expected) {
     status = paidAmount > expected ? "overpaid" : "paid";
   } else if (paidAmount > 0) {
     status = "partially_paid";
   } else {
-    // Unpaid - check if overdue
-    if (monthDueDate) {
-      const todayDhaka = getDhakaDateString();
-      if (todayDhaka > monthDueDate) {
+    status = "unpaid";
+  }
+
+  // Check overdue condition (applies if unpaid or partially paid and dueDate is passed in Asia/Dhaka)
+  if (paidAmount < expected && monthDueDate) {
+    const todayDhaka = getDhakaDateString();
+    if (todayDhaka > monthDueDate) {
+      isOverdue = true;
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const diffMs = new Date(todayDhaka) - new Date(monthDueDate);
+      daysOverdue = Math.max(1, Math.floor(diffMs / msPerDay));
+      if (status === "unpaid") {
         status = "overdue";
-        const msPerDay = 1000 * 60 * 60 * 24;
-        const diffMs = new Date(todayDhaka) - new Date(monthDueDate);
-        daysOverdue = Math.max(1, Math.floor(diffMs / msPerDay));
-      } else {
-        status = "unpaid";
       }
-    } else {
-      status = "unpaid";
     }
   }
 
@@ -171,7 +355,9 @@ function normalizePaymentRecord(payment, monthDueDate = null) {
     expectedAmount: expected,
     paidAmount: paidAmount,
     balance: balance,
+    overpayment: overpayment,
     status: status,
+    isOverdue: isOverdue,
     daysOverdue: daysOverdue,
     paid: paidAmount >= expected, // Keep boolean in sync
   };
@@ -268,12 +454,18 @@ function updateSyncMetadataDisplay() {
 
 // Live Firestore Realtime Sync + Seeding
 function initDataStore() {
-  // Load local audit logs
+  // Load local audit logs & finance ledgers
   try {
     const cachedAudit = localStorage.getItem("kisti_audit_logs");
     if (cachedAudit) auditLogs = JSON.parse(cachedAudit);
+    const cachedCb = localStorage.getItem("kisti_fund_cashbook");
+    if (cachedCb) fundCashbook = JSON.parse(cachedCb);
+    const cachedCl = localStorage.getItem("kisti_credit_ledger");
+    if (cachedCl) memberCreditLedger = JSON.parse(cachedCl);
+    const cachedRec = localStorage.getItem("kisti_reconciliations");
+    if (cachedRec) monthlyReconciliations = JSON.parse(cachedRec);
   } catch (e) {
-    console.warn("Failed to parse cached audit logs:", e);
+    console.warn("Failed to parse cached extension stores:", e);
   }
 
   if (db) {
@@ -295,15 +487,25 @@ function initDataStore() {
             JSON.stringify(paymentData),
           );
 
-          // Fetch audit logs if available
+          // Fetch audit logs & finance ledgers if available in Firestore
           try {
             const auditSnap = await db.collection("kisti").doc("audit").get();
             if (auditSnap.exists && Array.isArray(auditSnap.data().logs)) {
               auditLogs = auditSnap.data().logs;
               localStorage.setItem("kisti_audit_logs", JSON.stringify(auditLogs));
             }
+            const cbSnap = await db.collection("kisti").doc("cashbook").get();
+            if (cbSnap.exists && cbSnap.data().data) {
+              fundCashbook = cbSnap.data().data;
+              localStorage.setItem("kisti_fund_cashbook", JSON.stringify(fundCashbook));
+            }
+            const recSnap = await db.collection("kisti").doc("reconciliations").get();
+            if (recSnap.exists && Array.isArray(recSnap.data().data)) {
+              monthlyReconciliations = recSnap.data().data;
+              localStorage.setItem("kisti_reconciliations", JSON.stringify(monthlyReconciliations));
+            }
           } catch (auditErr) {
-            console.warn("Notice: Audit log fetch:", auditErr);
+            console.warn("Notice: Extension stores fetch:", auditErr);
           }
 
           initDashboard();
@@ -388,6 +590,10 @@ function retryDbConnection() {
 // Sync updates to cloud database
 async function savePaymentDataToStore() {
   localStorage.setItem("kisti_payment_data", JSON.stringify(paymentData));
+  localStorage.setItem("kisti_fund_cashbook", JSON.stringify(fundCashbook));
+  localStorage.setItem("kisti_credit_ledger", JSON.stringify(memberCreditLedger));
+  localStorage.setItem("kisti_reconciliations", JSON.stringify(monthlyReconciliations));
+
   lastModifiedAt = new Date().toISOString();
   updateSyncMetadataDisplay();
 
@@ -399,13 +605,23 @@ async function savePaymentDataToStore() {
         lastUpdated: lastModifiedAt,
       });
 
-      // Save audit logs to cloud
+      // Save audit logs & finance ledgers to cloud
       if (auditLogs && auditLogs.length > 0) {
         await db.collection("kisti").doc("audit").set({
           logs: auditLogs,
           lastUpdated: lastModifiedAt,
         });
       }
+
+      await db.collection("kisti").doc("cashbook").set({
+        data: fundCashbook,
+        lastUpdated: lastModifiedAt,
+      });
+
+      await db.collection("kisti").doc("reconciliations").set({
+        data: monthlyReconciliations,
+        lastUpdated: lastModifiedAt,
+      });
 
       updateDbStatusBadge("online");
     } catch (err) {
@@ -418,13 +634,14 @@ async function savePaymentDataToStore() {
 
 // 🛡️ Audit Logger
 async function logAuditAction(action, target, details, prevValue = "N/A", newValue = "N/A") {
+  const now = new Date();
   const entry = {
     id: "log_" + Date.now(),
-    timestamp: getDhakaDateString() + " " + getDhakaTimeString().split(" ")[1],
-    isoDate: new Date().toISOString(),
+    timestamp: formatAuditTimestamp(now),
+    isoDate: now.toISOString(),
     action: action,
     target: target,
-    actor: "Shared Admin Session",
+    actor: currentRole === "admin" ? "Admin" : "Shared Admin Session",
     details: details,
     prevValue: prevValue,
     newValue: newValue,
@@ -713,6 +930,15 @@ function initModalEvents() {
   const editDueDateModal = document.getElementById("editDueDateModal");
   const filterSheetWrapper = document.getElementById("filterSheetWrapper");
   const mobileMenuSheet = document.getElementById("mobileMenuSheet");
+  const receiptModal = document.getElementById("receiptModal");
+  const reminderModal = document.getElementById("reminderModal");
+  const voidPaymentModal = document.getElementById("voidPaymentModal");
+  const allocateCreditModal = document.getElementById("allocateCreditModal");
+  const cashbookEntryModal = document.getElementById("cashbookEntryModal");
+  const cashbookTransferModal = document.getElementById("cashbookTransferModal");
+  const cashbookOpeningModal = document.getElementById("cashbookOpeningModal");
+  const reopenMonthModal = document.getElementById("reopenMonthModal");
+  const restorePreviewModal = document.getElementById("restorePreviewModal");
 
   window.addEventListener("click", (e) => {
     if (e.target === addModal) closeModal();
@@ -720,6 +946,15 @@ function initModalEvents() {
     if (e.target === roleAuthModal) closeAuthModal();
     if (e.target === pmtDetailModal) closePaymentDetailModal();
     if (e.target === editDueDateModal) closeEditDueDateModal();
+    if (e.target === receiptModal) closeReceiptModal();
+    if (e.target === reminderModal) closeReminderModal();
+    if (e.target === voidPaymentModal) closeVoidPaymentModal();
+    if (e.target === allocateCreditModal) closeAllocateCreditModal();
+    if (e.target === cashbookEntryModal) closeCashbookEntryModal();
+    if (e.target === cashbookTransferModal) closeCashbookTransferModal();
+    if (e.target === cashbookOpeningModal) closeOpeningBalanceModal();
+    if (e.target === reopenMonthModal) closeReopenMonthModal();
+    if (e.target === restorePreviewModal) closeRestorePreviewModal();
   });
 
   window.addEventListener("keydown", (e) => {
@@ -733,6 +968,24 @@ function initModalEvents() {
         closePaymentDetailModal();
       if (editDueDateModal && !editDueDateModal.classList.contains("hidden"))
         closeEditDueDateModal();
+      if (receiptModal && !receiptModal.classList.contains("hidden"))
+        closeReceiptModal();
+      if (reminderModal && !reminderModal.classList.contains("hidden"))
+        closeReminderModal();
+      if (voidPaymentModal && !voidPaymentModal.classList.contains("hidden"))
+        closeVoidPaymentModal();
+      if (allocateCreditModal && !allocateCreditModal.classList.contains("hidden"))
+        closeAllocateCreditModal();
+      if (cashbookEntryModal && !cashbookEntryModal.classList.contains("hidden"))
+        closeCashbookEntryModal();
+      if (cashbookTransferModal && !cashbookTransferModal.classList.contains("hidden"))
+        closeCashbookTransferModal();
+      if (cashbookOpeningModal && !cashbookOpeningModal.classList.contains("hidden"))
+        closeOpeningBalanceModal();
+      if (reopenMonthModal && !reopenMonthModal.classList.contains("hidden"))
+        closeReopenMonthModal();
+      if (restorePreviewModal && !restorePreviewModal.classList.contains("hidden"))
+        closeRestorePreviewModal();
       if (filterSheetWrapper && filterSheetWrapper.classList.contains("open"))
         closeMobileFilterSheet();
       if (mobileMenuSheet && !mobileMenuSheet.classList.contains("hidden"))
@@ -1081,6 +1334,18 @@ function applyFilters() {
   updateAnalyticsCharts(processedMonths, selectedYear);
   renderTabularReport(processedMonths, selectedYear);
   renderAuditHistoryTable();
+  recalculateCashbookBalances();
+  recalculateMemberCredits();
+  renderOverviewFundStrip();
+  if (activeNavTab === "reports") {
+    if (activeReportsSubTab === "cashbook") {
+      renderCashbookKPIs();
+      renderCashbookTable();
+    } else if (activeReportsSubTab === "reconciliation") {
+      initReconciliationCycles();
+      updateReconciliationView();
+    }
+  }
 }
 
 function updateScopeLabels(year, month, name, status, search, matchingCount, totalCount) {
@@ -1425,6 +1690,13 @@ async function togglePaymentStatus(month, name, year) {
     showToast("Admin access required to modify payment status! 🔒", "warning");
     return;
   }
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const rec = getCycleReconciliation(year, month);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${month} ${year} is closed & reconciled. Reopen period to modify payments. 🔒`, "error");
+    return;
+  }
 
   const yearData = paymentData.find((y) => y.year == year);
   if (!yearData) return;
@@ -1435,8 +1707,16 @@ async function togglePaymentStatus(month, name, year) {
   const payment = monthData.payments.find((p) => p.name === name);
   if (!payment) return;
 
-  const prevStatus = payment.paid ? "Paid" : "Pending";
-  const newStatus = !payment.paid ? "Paid" : "Pending";
+  // 🛡️ Safety: If this installment has genuine transactions recorded, prevent destructive silent toggle!
+  const activeTx = (payment.paymentsList || []).filter((tx) => tx.status !== "voided");
+  if (activeTx.length > 0) {
+    showToast("This installment has genuine transaction records. Please use the Payment Details modal to view, record, or void payments with an audit reason.", "info");
+    openPaymentDetailModal(year, month, name);
+    return;
+  }
+
+  const prevStatus = payment.paid ? "Paid" : "Unpaid";
+  const newStatus = !payment.paid ? "Paid" : "Unpaid";
 
   payment.paid = !payment.paid;
   if (payment.paid) {
@@ -1450,6 +1730,7 @@ async function togglePaymentStatus(month, name, year) {
         method: "Quick Status Toggle",
         reference: "AUTO-TOGGLE",
         receiptRef: "",
+        receiptNumber: getOrGenerateReceiptNumber({ id: "pmt_" + Date.now() }, year, month),
         verified: true,
         verifiedBy: "Shared Admin Session",
         notes: "Quick toggle marked as Paid",
@@ -1726,18 +2007,30 @@ function openPaymentDetailModal(year, monthName, memberName) {
   const rawPmt = monthData.payments.find((p) => p.name === memberName);
   if (!rawPmt) return;
 
+  const rec = getCycleReconciliation(year, monthName);
+  const isPeriodClosed = rec && rec.isClosed;
+
   const p = normalizePaymentRecord(rawPmt, monthData.dueDate);
   const pmtList = p.paymentsList || [];
+
+  recalculateMemberCredits();
+  const creditInfo = memberCreditLedger[memberName] || { available: 0, totalGenerated: 0, totalAllocated: 0 };
 
   let statusBadge = "";
   if (p.status === "paid" || p.status === "overpaid") {
     statusBadge = `<span class="badge-paid"><i class="fas fa-check-circle"></i> Paid in Full</span>`;
+    if (p.overpayment > 0) {
+      statusBadge += ` <span class="badge-credit">+${fmtBDT(p.overpayment)} Credit</span>`;
+    }
   } else if (p.status === "partially_paid") {
     statusBadge = `<span class="badge-partial"><i class="fas fa-adjust"></i> Partial (${fmtBDT(p.paidAmount)})</span>`;
-  } else if (p.status === "overdue") {
+    if (p.isOverdue) {
+      statusBadge += ` <span class="badge-overdue"><i class="fas fa-exclamation-circle"></i> Overdue (${p.daysOverdue}d)</span>`;
+    }
+  } else if (p.status === "overdue" || p.isOverdue) {
     statusBadge = `<span class="badge-overdue"><i class="fas fa-exclamation-circle"></i> Overdue (${p.daysOverdue}d)</span>`;
   } else {
-    statusBadge = `<span class="badge-due"><i class="fas fa-clock"></i> Pending</span>`;
+    statusBadge = `<span class="badge-due"><i class="fas fa-clock"></i> Unpaid</span>`;
   }
 
   const pct = p.expectedAmount > 0 ? Math.min(100, Math.round((p.paidAmount / p.expectedAmount) * 100)) : (p.paid ? 100 : 0);
@@ -1748,29 +2041,48 @@ function openPaymentDetailModal(year, monthName, memberName) {
   if (pmtList.length > 0) {
     historyCards = pmtList
       .map(
-        (t) => `
-      <div class="pmt-tx-card">
+        (t) => {
+          const isVoided = t.status === "voided";
+          return `
+      <div class="pmt-tx-card ${isVoided ? "is-voided-tx" : ""}">
         <div class="pmt-tx-card-top">
-          <div class="pmt-tx-amount">+${fmtBDT(t.amount)}</div>
+          <div class="pmt-tx-amount" style="${isVoided ? "text-decoration: line-through; opacity: 0.6; color: var(--rose);" : ""}">
+            +${fmtBDT(t.amount)}
+          </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <div class="pmt-tx-date"><i class="fas fa-calendar-alt" aria-hidden="true"></i> ${t.date || "Not recorded"}</div>
-            ${currentRole === "admin" ? `
-              <button type="button" class="pmt-tx-delete-btn" onclick="deletePaymentEntry(${year}, '${monthName}', '${memberName}', '${t.id}')" title="Delete this payment transaction" aria-label="Delete transaction">
-                <i class="fas fa-trash-alt"></i>
+            <button type="button" class="btn-receipt-card" onclick="openReceiptModal(${year}, '${monthName}', '${memberName}', '${t.id}')" title="View printable voucher / receipt" aria-label="Receipt">
+              <i class="fas fa-receipt"></i> Receipt
+            </button>
+            ${currentRole === "admin" && !isPeriodClosed && !isVoided ? `
+              <button type="button" class="pmt-tx-delete-btn" onclick="openVoidPaymentModal(${year}, '${monthName}', '${memberName}', '${t.id}')" title="Reverse / Void this transaction" aria-label="Void transaction">
+                <i class="fas fa-undo-alt"></i> Void
               </button>
             ` : ""}
           </div>
         </div>
         <div class="pmt-tx-meta-row">
           <span class="pmt-meta-pill"><i class="fas fa-money-bill-wave" aria-hidden="true"></i> ${t.method || "Direct"}</span>
-          ${t.reference && t.reference !== "N/A" ? `<span class="pmt-meta-pill"><i class="fas fa-receipt" aria-hidden="true"></i> ${t.reference}</span>` : ""}
+          ${t.reference && t.reference !== "N/A" ? `<span class="pmt-meta-pill"><i class="fas fa-hashtag" aria-hidden="true"></i> ${t.reference}</span>` : ""}
           <span class="pmt-meta-pill ${t.verified ? "verified" : "unverified"}">
             <i class="fas ${t.verified ? "fa-shield-alt" : "fa-clock"}" aria-hidden="true"></i> ${t.verified ? (t.verifiedBy || "Verified") : "Unverified"}
           </span>
+          ${isVoided ? `
+            <span class="pmt-meta-pill" style="background:var(--rose-dim); color:var(--rose); border:1px solid var(--rose);">
+              <i class="fas fa-ban"></i> VOIDED (${t.voidType === "refund" ? "Cash Refund" : "Correction"})
+            </span>
+          ` : ""}
         </div>
         ${t.notes ? `<div class="pmt-tx-notes"><i class="fas fa-comment-dots" aria-hidden="true"></i> ${t.notes}</div>` : ""}
+        ${isVoided ? `
+          <div class="pmt-void-audit-note" style="margin-top:6px; font-size:11px; color:var(--rose); background:rgba(244,63,94,0.08); padding:6px 10px; border-radius:6px;">
+            <strong>Reversal Reason:</strong> ${t.voidReason || "Administrative Correction"} · 
+            <span>${formatAuditTimestamp(t.voidedAt)}</span>
+          </div>
+        ` : ""}
       </div>
-    `,
+    `;
+        }
       )
       .join("");
   } else if (p.paid) {
@@ -1778,7 +2090,12 @@ function openPaymentDetailModal(year, monthName, memberName) {
       <div class="pmt-tx-card legacy">
         <div class="pmt-tx-card-top">
           <div class="pmt-tx-amount">+${fmtBDT(p.expectedAmount)}</div>
-          <div class="pmt-tx-date"><i class="fas fa-check-double" aria-hidden="true"></i> Baseline Record</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="pmt-tx-date"><i class="fas fa-check-double" aria-hidden="true"></i> Baseline Record</div>
+            <button type="button" class="btn-receipt-card" onclick="openReceiptModal(${year}, '${monthName}', '${memberName}', 'legacy')" title="View receipt">
+              <i class="fas fa-receipt"></i> Receipt
+            </button>
+          </div>
         </div>
         <div class="pmt-tx-meta-row">
           <span class="pmt-meta-pill verified"><i class="fas fa-shield-alt" aria-hidden="true"></i> Verified Baseline</span>
@@ -1795,36 +2112,67 @@ function openPaymentDetailModal(year, monthName, memberName) {
     `;
   }
 
-  // 2. Admin 1-Click Quick Action Bar
+  // 2. Member Advance Credit Surplus Banner
+  let creditSurplusBanner = "";
+  if (creditInfo.available > 0) {
+    creditSurplusBanner = `
+      <div class="alloc-credit-header" style="margin: 12px 0;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <strong style="color:var(--accent-teal);"><i class="fas fa-coins"></i> Available Advance Credit: ${fmtBDT(creditInfo.available)}</strong>
+            <small style="display:block; color:var(--text-3); font-size:11px;">Surplus payment available to apply against unpaid installments.</small>
+          </div>
+          ${currentRole === "admin" && p.balance > 0 && !isPeriodClosed ? `
+            <button type="button" class="btn-sm-action" onclick="openAllocateCreditModal('${memberName}')" style="background:var(--accent-teal); color:#000; border:none; padding:5px 10px; border-radius:6px; font-weight:600; cursor:pointer;">
+              Allocate Credit
+            </button>
+          ` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  // 3. Admin 1-Click Quick Action Bar & Reminder Trigger
   let adminQuickToggleBar = "";
-  if (currentRole === "admin") {
-    if (p.paid) {
-      adminQuickToggleBar = `
-        <div class="pmt-quick-actions-bar">
-          <button type="button" class="btn-pmt-quick-toggle is-revert" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
-            <i class="fas fa-undo-alt" aria-hidden="true"></i> Revert Status to Pending (Unpaid)
-          </button>
-        </div>
-      `;
-    } else {
-      adminQuickToggleBar = `
-        <div class="pmt-quick-actions-bar">
-          <button type="button" class="btn-pmt-quick-toggle is-pay" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
-            <i class="fas fa-check-circle" aria-hidden="true"></i> Quick Action: Mark as Paid in Full (${fmtBDT(p.expectedAmount)})
-          </button>
-        </div>
-      `;
+  if (currentRole === "admin" && !isPeriodClosed) {
+    const activeTxCount = pmtList.filter((x) => x.status !== "voided").length;
+    if (activeTxCount === 0) {
+      if (p.paid) {
+        adminQuickToggleBar = `
+          <div class="pmt-quick-actions-bar">
+            <button type="button" class="btn-pmt-quick-toggle is-revert" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
+              <i class="fas fa-undo-alt" aria-hidden="true"></i> Revert Status to Unpaid
+            </button>
+          </div>
+        `;
+      } else {
+        adminQuickToggleBar = `
+          <div class="pmt-quick-actions-bar">
+            <button type="button" class="btn-pmt-quick-toggle is-pay" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
+              <i class="fas fa-check-circle" aria-hidden="true"></i> Quick Action: Mark as Paid in Full (${fmtBDT(p.expectedAmount)})
+            </button>
+          </div>
+        `;
+      }
     }
   }
 
-  // 3. Admin Partial / Custom Payment Form
+  // 4. Admin Record Form or Period Locked Notice
   let adminRecordForm = "";
-  if (currentRole === "admin") {
+  if (isPeriodClosed) {
+    adminRecordForm = `
+      <div style="background:var(--surface-2); border:1px solid var(--border-color); padding:16px; border-radius:10px; text-align:center; margin-top:16px;">
+        <i class="fas fa-lock" style="color:var(--amber); font-size:22px; margin-bottom:6px; display:block;"></i>
+        <strong>Cycle Reconciled & Closed</strong>
+        <p style="color:var(--text-3); font-size:12px; margin:4px 0 0;">This monthly cycle is period-locked. Modifying, adding, or voiding payments requires an administrator to unlock the period in Reports &gt; Reconciliation.</p>
+      </div>
+    `;
+  } else if (currentRole === "admin") {
     const defaultPayAmount = Math.max(0, p.balance) || p.expectedAmount || 1000;
     adminRecordForm = `
       <div class="pmt-admin-form-card">
         <div class="pmt-admin-form-header">
-          <h4><i class="fas fa-plus-circle" aria-hidden="true"></i> Record Partial / Custom Payment</h4>
+          <h4><i class="fas fa-plus-circle" aria-hidden="true"></i> Record Payment Transaction</h4>
           <span class="pmt-admin-badge"><i class="fas fa-user-shield" aria-hidden="true"></i> Admin Action</span>
         </div>
 
@@ -1967,7 +2315,18 @@ function openPaymentDetailModal(year, monthName, memberName) {
           <span class="pmt-stat-val ${p.balance > 0 ? (p.status === 'overdue' ? 'is-overdue' : 'is-due') : 'is-paid'}">${p.balance > 0 ? fmtBDT(p.balance) : (p.balance < 0 ? `+${fmtBDT(Math.abs(p.balance))}` : '৳0')}</span>
         </div>
       </div>
+
+      ${p.balance > 0 ? `
+        <div style="margin-top:14px; text-align:right;">
+          <button type="button" class="btn-secondary" onclick="openReminderModal(${year}, '${monthName}', '${memberName}')" style="padding:6px 14px; font-size:12px;">
+            <i class="fas fa-paper-plane" style="color:var(--accent-teal);"></i> Prepare Reminder Draft
+          </button>
+        </div>
+      ` : ""}
     </div>
+
+    <!-- Advance Credit Surplus Banner -->
+    ${creditSurplusBanner}
 
     <!-- Quick Admin Action Bar -->
     ${adminQuickToggleBar}
@@ -2000,7 +2359,6 @@ function setPartialAmount(val) {
 
 async function handleModalQuickToggle(year, monthName, memberName) {
   await togglePaymentStatus(monthName, memberName, year);
-  // Re-open/update modal with refreshed state
   openPaymentDetailModal(year, monthName, memberName);
 }
 
@@ -2009,49 +2367,17 @@ function closePaymentDetailModal() {
   if (modal) modal.classList.add("hidden");
 }
 
-async function deletePaymentEntry(year, monthName, memberName, paymentId) {
-  if (currentRole !== "admin") {
-    showToast("Admin access required! 🔒", "error");
-    return;
-  }
-
-  const yearData = paymentData.find((y) => y.year == year);
-  if (!yearData) return;
-  const monthData = yearData.months.find((m) => m.month === monthName);
-  if (!monthData) return;
-  const payment = monthData.payments.find((p) => p.name === memberName);
-  if (!payment) return;
-
-  payment.paymentsList = payment.paymentsList || [];
-  const targetIdx = payment.paymentsList.findIndex((item) => item.id === paymentId);
-  if (targetIdx === -1) return;
-
-  const removed = payment.paymentsList.splice(targetIdx, 1)[0];
-
-  // Recalculate
-  const totalPaid = payment.paymentsList.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  payment.paidAmount = totalPaid;
-  payment.balance = payment.amount - totalPaid;
-  payment.paid = totalPaid >= payment.amount;
-
-  await logAuditAction(
-    "DELETE_PAYMENT",
-    `${memberName} · ${monthName} ${year}`,
-    `Deleted payment transaction of ${fmtBDT(removed.amount)}`,
-    `Paid: ${fmtBDT(payment.paidAmount + (Number(removed.amount) || 0))}`,
-    `Paid: ${fmtBDT(totalPaid)} (Balance: ${fmtBDT(payment.balance)})`,
-  );
-
-  await savePaymentDataToStore();
-  showToast(`Payment of ${fmtBDT(removed.amount)} removed! 🗑️`);
-  openPaymentDetailModal(year, monthName, memberName);
-  applyFilters();
-}
-
 async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
   e.preventDefault();
   if (currentRole !== "admin") {
     showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const rec = getCycleReconciliation(year, monthName);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${monthName} ${year} is closed & reconciled. Reopen period to record payments. 🔒`, "error");
     return;
   }
 
@@ -2093,7 +2419,6 @@ async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
     if (!payment.paymentsList) {
       payment.paymentsList = [];
       if (payment.paid && payment.paidAmount > 0) {
-        // preserve legacy base payment
         payment.paymentsList.push({
           id: "pmt_legacy",
           amount: payment.paidAmount,
@@ -2117,6 +2442,7 @@ async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
       method: payMethod,
       reference: payRef,
       receiptRef: payReceipt,
+      receiptNumber: getOrGenerateReceiptNumber({ id: "pmt_" + Date.now() }, year, monthName),
       verified: isVerified,
       verifiedBy: isVerified ? "Shared Admin Session" : "Unverified",
       notes: payNotes,
@@ -2124,11 +2450,39 @@ async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
 
     payment.paymentsList.push(newPmt);
 
-    // Recalculate totals
-    const totalPaid = payment.paymentsList.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    // Recalculate totals excluding voided transactions
+    const totalPaid = payment.paymentsList
+      .filter((x) => x.status !== "voided")
+      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
     payment.paidAmount = totalPaid;
-    payment.balance = payment.amount - totalPaid;
+    payment.balance = Math.max(0, payment.amount - totalPaid);
     payment.paid = totalPaid >= payment.amount;
+
+    // Link cashbook inflow entry
+    const accountKey = payMethod.toLowerCase().includes("bank")
+      ? "bank"
+      : payMethod.toLowerCase().includes("bkash")
+      ? "bkash"
+      : payMethod.toLowerCase().includes("nagad")
+      ? "nagad"
+      : "cash";
+
+    fundCashbook.entries.push({
+      id: "cbe_" + Date.now(),
+      type: "inflow",
+      account: accountKey,
+      category: "Member Installment Collection",
+      amount: amount,
+      date: payDate,
+      reference: payRef,
+      notes: `Collection from ${memberName} (${monthName} ${year})`,
+      relatedPaymentId: newPmt.id,
+      createdAt: new Date().toISOString(),
+      createdBy: "Admin",
+    });
+
+    recalculateCashbookBalances();
+    recalculateMemberCredits();
 
     await logAuditAction(
       "RECORD_PAYMENT",
@@ -3005,11 +3359,17 @@ async function handleCreateNewMonth(e) {
     showToast("Admin access required to create a new month! 🔒", "error");
     return;
   }
+  if (!checkOnlineForFinancialWrite()) return;
 
   const year = parseInt(document.getElementById("newMonthYear").value);
   const month = document.getElementById("newMonthSelect").value;
-  const dueDate = document.getElementById("newMonthDueDate")?.value || "";
+  const dueDate = document.getElementById("newMonthDueDate")?.value?.trim();
   const amount = parseInt(document.getElementById("newMonthAmount").value) || 1000;
+
+  if (!dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    showToast("A valid cycle due date (YYYY-MM-DD in Asia/Dhaka) is strictly required! 📅", "error");
+    return;
+  }
 
   const checkedMembers = Array.from(
     document.querySelectorAll('input[name="newMonthMember"]:checked'),
@@ -3165,11 +3525,13 @@ function calcFDR() {
   const mo = parseInt(document.getElementById("fdr-months")?.value) || 0;
   const n = parseInt(document.getElementById("fdr-compound")?.value) || 12;
   const resultEl = document.getElementById("fdr-result");
+  const formulaNoteEl = document.getElementById("fdr-formula-note");
 
   if (!resultEl) return;
 
   if (P <= 0 || r <= 0 || (yr === 0 && mo === 0) || !isFinite(P) || !isFinite(r)) {
     resultEl.innerHTML = `<div style="color:var(--text-3); font-size:12px;">Please enter valid deposit amount, rate, and tenure.</div>`;
+    if (formulaNoteEl) formulaNoteEl.innerHTML = "";
     return;
   }
 
@@ -3178,6 +3540,7 @@ function calcFDR() {
   const maturity = P * Math.pow(1 + r / 100 / n, n * t);
   const interest = maturity - P;
   const tenureStr = (yr > 0 ? yr + " yr " : "") + (mo > 0 ? mo + " mo" : "");
+  const compDesc = n === 12 ? "Monthly Compounding" : n === 4 ? "Quarterly Compounding" : "Annual Compounding";
 
   buildResultStrip(
     "fdr-result",
@@ -3185,8 +3548,18 @@ function calcFDR() {
     interest,
     maturity,
     `Principal deposit (${fmtMoney(P)})`,
-    `After ${tenureStr} · ${n === 12 ? "Monthly Compounding" : "Annual Compounding"}`,
+    `After ${tenureStr} · ${compDesc}`,
   );
+
+  if (formulaNoteEl) {
+    formulaNoteEl.innerHTML = `
+      <div class="calc-formula-desc" style="font-size:12px; line-height:1.5; color:var(--text-2); background:var(--surface-2); padding:10px 14px; border-radius:8px; border-left:3px solid var(--accent-teal);">
+        <strong>Applied Formula:</strong> <code>A = P(1 + r/n)^(n×t)</code> (${compDesc})<br/>
+        <span>Parameters: <code>P = ${fmtMoney(P)}</code>, estimated rate <code>r = ${r}%</code>, compounded <code>n = ${n}</code> times/yr, tenure <code>t = ${t.toFixed(2)} years</code>.</span><br/>
+        <small style="color:var(--text-3); display:inline-block; margin-top:4px;">* All calculator outputs are indicative benchmark estimates. Figures exclude applicable taxes, government excise duties, and bank account maintenance fees.</small>
+      </div>
+    `;
+  }
 }
 
 // ── Regular DPS: Mudaraba Monthly Scheme
@@ -3194,22 +3567,33 @@ function calcDPS() {
   const PMT = parseFloat(document.getElementById("dps-amount")?.value) || 0;
   const r = parseFloat(document.getElementById("dps-rate")?.value) || 0;
   const yr = parseInt(document.getElementById("dps-years")?.value) || 0;
+  const timing = document.getElementById("dps-timing")?.value || "begin";
   const resultEl = document.getElementById("dps-result");
+  const formulaNoteEl = document.getElementById("dps-formula-note");
 
   if (!resultEl) return;
 
   if (PMT <= 0 || r <= 0 || yr <= 0 || !isFinite(PMT) || !isFinite(r)) {
     resultEl.innerHTML = `<div style="color:var(--text-3); font-size:12px;">Please enter valid monthly installment, rate, and tenure.</div>`;
+    if (formulaNoteEl) formulaNoteEl.innerHTML = "";
     return;
   }
 
   const mr = r / 100 / 12;
   const n = yr * 12;
-  // Ordinary annuity future value: PMT * ((1 + r/12)^n - 1) / (r/12)
-  // Deposit at beginning of month: FV = PMT * ((1 + mr)^n - 1) / mr * (1 + mr)
-  const maturity = PMT * ((Math.pow(1 + mr, n) - 1) / mr) * (1 + mr);
+  let maturity = 0;
+
+  if (timing === "begin") {
+    // Deposit at beginning of month (Annuity Due): FV = PMT * ((1 + mr)^n - 1) / mr * (1 + mr)
+    maturity = PMT * ((Math.pow(1 + mr, n) - 1) / mr) * (1 + mr);
+  } else {
+    // Deposit at end of month (Ordinary Annuity): FV = PMT * ((1 + mr)^n - 1) / mr
+    maturity = PMT * ((Math.pow(1 + mr, n) - 1) / mr);
+  }
+
   const deposited = PMT * n;
   const interest = maturity - deposited;
+  const timingDesc = timing === "begin" ? "Beginning of Month (Annuity Due)" : "End of Month (Ordinary Annuity)";
 
   buildResultStrip(
     "dps-result",
@@ -3217,8 +3601,19 @@ function calcDPS() {
     interest,
     maturity,
     `${fmtMoney(PMT)}/mo × ${n} months`,
-    `After ${yr} year${yr > 1 ? "s" : ""}`,
+    `After ${yr} year${yr > 1 ? "s" : ""} · ${timingDesc}`,
   );
+
+  if (formulaNoteEl) {
+    const isBegin = timing === "begin";
+    formulaNoteEl.innerHTML = `
+      <div class="calc-formula-desc" style="font-size:12px; line-height:1.5; color:var(--text-2); background:var(--surface-2); padding:10px 14px; border-radius:8px; border-left:3px solid var(--accent-teal);">
+        <strong>Applied Formula:</strong> <code>${isBegin ? "FV = PMT × [((1 + r/12)^n - 1) / (r/12)] × (1 + r/12)" : "FV = PMT × [((1 + r/12)^n - 1) / (r/12)]"}</code> (${timingDesc})<br/>
+        <span>Parameters: monthly deposit <code>PMT = ${fmtMoney(PMT)}</code>, estimated rate <code>r = ${r}%</code>, tenure <code>n = ${n} months</code> (${yr} yrs).</span><br/>
+        <small style="color:var(--text-3); display:inline-block; margin-top:4px;">* All calculator outputs are indicative benchmark estimates. Figures exclude applicable taxes, government excise duties, and bank account maintenance fees.</small>
+      </div>
+    `;
+  }
 }
 
 // ── Kisti Variable DPS: Stepped Installment Scheme
@@ -3268,5 +3663,1603 @@ function calcKistiDPS() {
 function resetToDefaultData() {
   localStorage.removeItem("kisti_payment_data");
   localStorage.removeItem("kisti_audit_logs");
+  localStorage.removeItem("kisti_fund_cashbook");
+  localStorage.removeItem("kisti_credit_ledger");
+  localStorage.removeItem("kisti_reconciliations");
   location.reload();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 💰 FUND CASHBOOK & MULTI-ACCOUNT MANAGEMENT
+// ─────────────────────────────────────────────────────────────────
+
+const CASHBOOK_CATEGORIES = {
+  inflow: [
+    "Member Installment Collection",
+    "Bank Profit / Interest Credited",
+    "Capital Contribution",
+    "Other Inflow",
+  ],
+  outflow: [
+    "Bank Charges & Excise Duty",
+    "Operating & Administrative Expense",
+    "Member Cash Refund",
+    "Investment / FDR Placement",
+    "Other Outflow",
+  ],
+};
+
+function recalculateCashbookBalances() {
+  const op = fundCashbook.openingBalances || { bank: 0, cash: 0, bkash: 0, nagad: 0 };
+  const balancesPoisha = {
+    bank: toPoisha(op.bank || 0),
+    cash: toPoisha(op.cash || 0),
+    bkash: toPoisha(op.bkash || 0),
+    nagad: toPoisha(op.nagad || 0),
+  };
+
+  const entries = fundCashbook.entries || [];
+  entries.forEach((e) => {
+    if (e.status === "voided") return;
+    const amtP = toPoisha(e.amount);
+    if (e.type === "inflow") {
+      if (balancesPoisha[e.account] !== undefined) {
+        balancesPoisha[e.account] += amtP;
+      }
+    } else if (e.type === "outflow") {
+      if (balancesPoisha[e.account] !== undefined) {
+        balancesPoisha[e.account] -= amtP;
+      }
+    } else if (e.type === "transfer") {
+      if (balancesPoisha[e.fromAccount] !== undefined) {
+        balancesPoisha[e.fromAccount] -= amtP;
+      }
+      if (balancesPoisha[e.toAccount] !== undefined) {
+        balancesPoisha[e.toAccount] += amtP;
+      }
+    }
+  });
+
+  fundCashbook.accounts.forEach((acc) => {
+    acc.balance = fromPoisha(balancesPoisha[acc.id] || 0);
+    acc.openingBalance = op[acc.id] || 0;
+  });
+
+  return balancesPoisha;
+}
+
+function renderOverviewFundStrip() {
+  const container = document.getElementById("fundStripCards");
+  if (!container) return;
+  recalculateCashbookBalances();
+
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
+  const totalMobileWallets = bkashAcc.balance + nagadAcc.balance;
+  const totalLiquid = bankAcc.balance + cashAcc.balance + totalMobileWallets;
+
+  container.innerHTML = `
+    <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
+      <div class="fund-card-icon bank"><i class="fas fa-university"></i></div>
+      <div class="fund-card-content">
+        <span class="fund-card-label">Bank Balance</span>
+        <strong class="fund-card-val">${fmtBDT(bankAcc.balance)}</strong>
+        <small class="fund-card-sub">Islami Bank (IBBL)</small>
+      </div>
+    </div>
+    <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
+      <div class="fund-card-icon cash"><i class="fas fa-money-bill-wave"></i></div>
+      <div class="fund-card-content">
+        <span class="fund-card-label">Cash Drawer</span>
+        <strong class="fund-card-val">${fmtBDT(cashAcc.balance)}</strong>
+        <small class="fund-card-sub">Cash in Hand</small>
+      </div>
+    </div>
+    <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
+      <div class="fund-card-icon wallet"><i class="fas fa-mobile-alt"></i></div>
+      <div class="fund-card-content">
+        <span class="fund-card-label">Mobile Wallets</span>
+        <strong class="fund-card-val">${fmtBDT(totalMobileWallets)}</strong>
+        <small class="fund-card-sub">bKash: ${fmtBDT(bkashAcc.balance)} · Nagad: ${fmtBDT(nagadAcc.balance)}</small>
+      </div>
+    </div>
+    <div class="fund-strip-card highlight" onclick="navigateToReportsSubtab('cashbook')">
+      <div class="fund-card-icon total"><i class="fas fa-coins"></i></div>
+      <div class="fund-card-content">
+        <span class="fund-card-label">Total Liquid Funds</span>
+        <strong class="fund-card-val" style="color:var(--accent-teal);">${fmtBDT(totalLiquid)}</strong>
+        <small class="fund-card-sub">Reconciled Accounts</small>
+      </div>
+    </div>
+  `;
+}
+
+function renderCashbookKPIs() {
+  const container = document.getElementById("cashbookKpiGrid");
+  if (!container) return;
+  recalculateCashbookBalances();
+
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
+  const totalLiquid = bankAcc.balance + cashAcc.balance + bkashAcc.balance + nagadAcc.balance;
+
+  let totalCollections = 0;
+  paymentData.forEach((y) => {
+    (y.months || []).forEach((m) => {
+      (m.payments || []).forEach((p) => {
+        const norm = normalizePaymentRecord(p, m.dueDate);
+        totalCollections += norm.paidAmount;
+      });
+    });
+  });
+
+  container.innerHTML = `
+    <div class="cb-kpi-card">
+      <span class="cb-kpi-label"><i class="fas fa-university"></i> Islami Bank</span>
+      <strong class="cb-kpi-val">${fmtBDT(bankAcc.balance)}</strong>
+      <small class="cb-kpi-sub">Opening: ${fmtBDT(bankAcc.openingBalance)}</small>
+    </div>
+    <div class="cb-kpi-card">
+      <span class="cb-kpi-label"><i class="fas fa-money-bill-wave"></i> Cash Drawer</span>
+      <strong class="cb-kpi-val">${fmtBDT(cashAcc.balance)}</strong>
+      <small class="cb-kpi-sub">Opening: ${fmtBDT(cashAcc.openingBalance)}</small>
+    </div>
+    <div class="cb-kpi-card">
+      <span class="cb-kpi-label"><i class="fas fa-mobile-alt"></i> Mobile Wallets</span>
+      <strong class="cb-kpi-val">${fmtBDT(bkashAcc.balance + nagadAcc.balance)}</strong>
+      <small class="cb-kpi-sub">bKash: ${fmtBDT(bkashAcc.balance)} · Nagad: ${fmtBDT(nagadAcc.balance)}</small>
+    </div>
+    <div class="cb-kpi-card highlight">
+      <span class="cb-kpi-label"><i class="fas fa-vault"></i> Total Liquid Accounts</span>
+      <strong class="cb-kpi-val" style="color:var(--accent-teal);">${fmtBDT(totalLiquid)}</strong>
+      <small class="cb-kpi-sub">Opening: ${fmtBDT(fundCashbook.openingBalances.bank + fundCashbook.openingBalances.cash + fundCashbook.openingBalances.bkash + fundCashbook.openingBalances.nagad)}</small>
+    </div>
+    <div class="cb-kpi-card">
+      <span class="cb-kpi-label"><i class="fas fa-receipt"></i> Verified Member Collections</span>
+      <strong class="cb-kpi-val is-paid">${fmtBDT(totalCollections)}</strong>
+      <small class="cb-kpi-sub">Installments Paid to Date</small>
+    </div>
+    <div class="cb-kpi-card">
+      <span class="cb-kpi-label"><i class="fas fa-history"></i> Legacy Unassigned Collections</span>
+      <strong class="cb-kpi-val" style="color:var(--amber);">৳51,000</strong>
+      <small class="cb-kpi-sub">Pre-Reconciliation Boundary</small>
+    </div>
+  `;
+}
+
+function renderCashbookTable() {
+  const container = document.getElementById("cashbookTableContainer");
+  if (!container) return;
+
+  const accountFilter = document.getElementById("cashbookAccountFilter")?.value || "all";
+  const typeFilter = document.getElementById("cashbookTypeFilter")?.value || "all";
+
+  let entries = fundCashbook.entries || [];
+  if (accountFilter !== "all") {
+    entries = entries.filter((e) => e.account === accountFilter || e.fromAccount === accountFilter || e.toAccount === accountFilter);
+  }
+  if (typeFilter !== "all") {
+    entries = entries.filter((e) => e.type === typeFilter);
+  }
+
+  entries = [...entries].sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
+
+  if (entries.length === 0) {
+    container.innerHTML = `
+      <div class="empty" style="padding:28px; text-align:center;">
+        <i class="fas fa-book-open" style="font-size:2rem; color:var(--text-3); margin-bottom:8px; display:block;"></i>
+        <span>No cashbook movements recorded for this filter. Use the actions above to record movements, transfers, or opening balances.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const accountLabels = {
+    bank: "Bank (IBBL)",
+    cash: "Cash Drawer",
+    bkash: "bKash",
+    nagad: "Nagad",
+  };
+
+  const rows = entries.map((e) => {
+    let typeBadge = "";
+    let amountDisplay = "";
+    let accountDisplay = "";
+
+    if (e.type === "inflow") {
+      typeBadge = `<span class="badge-paid" style="font-size:10px;"><i class="fas fa-arrow-down"></i> Inflow</span>`;
+      amountDisplay = `<strong style="color:var(--green); font-variant-numeric:tabular-nums;">+${fmtBDT(e.amount)}</strong>`;
+      accountDisplay = accountLabels[e.account] || e.account;
+    } else if (e.type === "outflow") {
+      typeBadge = `<span class="badge-overdue" style="font-size:10px;"><i class="fas fa-arrow-up"></i> Outflow</span>`;
+      amountDisplay = `<strong style="color:var(--rose); font-variant-numeric:tabular-nums;">-${fmtBDT(e.amount)}</strong>`;
+      accountDisplay = accountLabels[e.account] || e.account;
+    } else if (e.type === "transfer") {
+      typeBadge = `<span class="badge-partial" style="font-size:10px;"><i class="fas fa-exchange-alt"></i> Transfer</span>`;
+      amountDisplay = `<strong style="color:var(--indigo); font-variant-numeric:tabular-nums;">${fmtBDT(e.amount)}</strong>`;
+      accountDisplay = `${accountLabels[e.fromAccount] || e.fromAccount} → ${accountLabels[e.toAccount] || e.toAccount}`;
+    }
+
+    return `
+      <tr>
+        <td>${e.date || "Not recorded"}</td>
+        <td>${typeBadge}</td>
+        <td>${accountDisplay}</td>
+        <td>${e.category || "General"}</td>
+        <td style="text-align:right;">${amountDisplay}</td>
+        <td><small>${e.reference || "—"}</small></td>
+        <td><small>${e.notes || "—"}</small></td>
+      </tr>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <table class="cashbook-ledger-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Account</th>
+          <th>Category</th>
+          <th style="text-align:right;">Amount</th>
+          <th>Reference</th>
+          <th>Notes / Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function openCashbookEntryModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  updateCbCategoryOptions();
+  const dateInput = document.getElementById("cbEntryDate");
+  if (dateInput) dateInput.value = getDhakaDateString();
+  const modal = document.getElementById("cashbookEntryModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeCashbookEntryModal() {
+  const modal = document.getElementById("cashbookEntryModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function updateCbCategoryOptions() {
+  const typeSelect = document.getElementById("cbEntryType");
+  const catSelect = document.getElementById("cbEntryCategory");
+  if (!typeSelect || !catSelect) return;
+  const type = typeSelect.value || "inflow";
+  const cats = CASHBOOK_CATEGORIES[type] || [];
+  catSelect.innerHTML = cats.map((c) => `<option value="${c}">${c}</option>`).join("");
+}
+
+async function handleCashbookEntrySubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const type = document.getElementById("cbEntryType").value;
+  const account = document.getElementById("cbEntryAccount").value;
+  const category = document.getElementById("cbEntryCategory").value;
+  const amount = parseFloat(document.getElementById("cbEntryAmount").value) || 0;
+  const date = document.getElementById("cbEntryDate").value || getDhakaDateString();
+  const ref = document.getElementById("cbEntryRef").value.trim();
+  const notes = document.getElementById("cbEntryNotes").value.trim();
+
+  if (amount <= 0 || !isFinite(amount)) {
+    showToast("Please enter a valid positive amount!", "error");
+    return;
+  }
+
+  const entry = {
+    id: "cbe_" + Date.now(),
+    type,
+    account,
+    category,
+    amount,
+    date,
+    reference: ref,
+    notes,
+    createdAt: new Date().toISOString(),
+    createdBy: "Admin",
+  };
+
+  fundCashbook.entries.push(entry);
+  recalculateCashbookBalances();
+  await logAuditAction(
+    "CASHBOOK_ENTRY",
+    `${type.toUpperCase()} · ${account}`,
+    `Recorded ${type} of ${fmtBDT(amount)} for ${category}. Ref: ${ref || "N/A"}`
+  );
+  await savePaymentDataToStore();
+  closeCashbookEntryModal();
+  renderCashbookKPIs();
+  renderCashbookTable();
+  renderOverviewFundStrip();
+  showToast(`Cashbook ${type} of ${fmtBDT(amount)} saved! ✅`);
+}
+
+function openCashbookTransferModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  const dateInput = document.getElementById("cbTransferDate");
+  if (dateInput) dateInput.value = getDhakaDateString();
+  const modal = document.getElementById("cashbookTransferModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeCashbookTransferModal() {
+  const modal = document.getElementById("cashbookTransferModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleCashbookTransferSubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const fromAccount = document.getElementById("cbTransferFrom").value;
+  const toAccount = document.getElementById("cbTransferTo").value;
+  const amount = parseFloat(document.getElementById("cbTransferAmount").value) || 0;
+  const date = document.getElementById("cbTransferDate").value || getDhakaDateString();
+  const ref = document.getElementById("cbTransferRef").value.trim();
+
+  if (fromAccount === toAccount) {
+    showToast("Source and destination accounts must be different!", "warning");
+    return;
+  }
+  if (amount <= 0 || !isFinite(amount)) {
+    showToast("Please enter a valid positive transfer amount!", "error");
+    return;
+  }
+
+  const entry = {
+    id: "cbt_" + Date.now(),
+    type: "transfer",
+    fromAccount,
+    toAccount,
+    amount,
+    date,
+    category: "Internal Account Transfer",
+    reference: ref,
+    notes: `Internal transfer from ${fromAccount} to ${toAccount}`,
+    createdAt: new Date().toISOString(),
+    createdBy: "Admin",
+  };
+
+  fundCashbook.entries.push(entry);
+  recalculateCashbookBalances();
+  await logAuditAction(
+    "INTERNAL_TRANSFER",
+    `${fromAccount} → ${toAccount}`,
+    `Transferred ${fmtBDT(amount)} from ${fromAccount} to ${toAccount}. Total fund unchanged.`
+  );
+  await savePaymentDataToStore();
+  closeCashbookTransferModal();
+  renderCashbookKPIs();
+  renderCashbookTable();
+  renderOverviewFundStrip();
+  showToast(`Transfer of ${fmtBDT(amount)} executed! ⇄`);
+}
+
+function openOpeningBalanceModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  const op = fundCashbook.openingBalances || {};
+  document.getElementById("cbOpeningDate").value = op.date || "2026-01-01";
+  document.getElementById("cbOpeningBank").value = op.bank || 0;
+  document.getElementById("cbOpeningCash").value = op.cash || 0;
+  document.getElementById("cbOpeningBkash").value = op.bkash || 0;
+  document.getElementById("cbOpeningNagad").value = op.nagad || 0;
+  document.getElementById("cbOpeningNotes").value = op.notes || "";
+  const modal = document.getElementById("cashbookOpeningModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeOpeningBalanceModal() {
+  const modal = document.getElementById("cashbookOpeningModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleOpeningBalanceSubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const date = document.getElementById("cbOpeningDate").value;
+  const bank = parseFloat(document.getElementById("cbOpeningBank").value) || 0;
+  const cash = parseFloat(document.getElementById("cbOpeningCash").value) || 0;
+  const bkash = parseFloat(document.getElementById("cbOpeningBkash").value) || 0;
+  const nagad = parseFloat(document.getElementById("cbOpeningNagad").value) || 0;
+  const notes = document.getElementById("cbOpeningNotes").value.trim();
+
+  fundCashbook.openingBalances = {
+    date,
+    bank,
+    cash,
+    bkash,
+    nagad,
+    notes,
+  };
+
+  recalculateCashbookBalances();
+  await logAuditAction(
+    "SET_OPENING_BALANCES",
+    `Effective: ${date}`,
+    `Opening Balances set: Bank: ৳${bank}, Cash: ৳${cash}, bKash: ৳${bkash}, Nagad: ৳${nagad}`
+  );
+  await savePaymentDataToStore();
+  closeOpeningBalanceModal();
+  renderCashbookKPIs();
+  renderCashbookTable();
+  renderOverviewFundStrip();
+  showToast("Verified opening balances saved! ⚙️");
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 🚫 REVERSE / VOID PAYMENT WORKFLOW
+// ─────────────────────────────────────────────────────────────────
+
+let targetVoidTxInfo = null;
+
+function openVoidPaymentModal(year, monthName, memberName, paymentId) {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+
+  const rec = getCycleReconciliation(year, monthName);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${monthName} ${year} is closed & reconciled. Reopen period to void transactions. 🔒`, "error");
+    return;
+  }
+
+  const yearData = paymentData.find((y) => y.year == year);
+  const monthData = yearData?.months.find((m) => m.month === monthName);
+  const payment = monthData?.payments.find((p) => p.name === memberName);
+  const tx = payment?.paymentsList?.find((t) => t.id === paymentId);
+
+  if (!tx) {
+    showToast("Transaction not found!", "error");
+    return;
+  }
+
+  if (tx.status === "voided") {
+    showToast("This payment has already been voided/reversed and cannot be modified again! 🛑", "warning");
+    return;
+  }
+
+  recalculateMemberCredits();
+  const info = memberCreditLedger[memberName] || { available: 0, totalGenerated: 0, totalAllocated: 0 };
+  const remainingAfterVoid = (info.totalGenerated - tx.amount) - info.totalAllocated;
+  if (remainingAfterVoid < 0) {
+    showToast(`Cannot void this payment: ৳${Math.abs(remainingAfterVoid)} of credit generated by this payment has already been allocated to other installments. De-allocate credit first! ⚠️`, "error");
+    return;
+  }
+
+  targetVoidTxInfo = { year, monthName, memberName, paymentId, tx, payment };
+
+  const summaryCard = document.getElementById("voidTxSummaryCard");
+  if (summaryCard) {
+    summaryCard.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>${memberName}</strong> · ${monthName} ${year}
+          <div style="font-size:12px; color:var(--text-3);"><i class="fas fa-receipt"></i> Ref: ${tx.reference || "N/A"} · ${tx.method}</div>
+        </div>
+        <div style="text-align:right;">
+          <strong style="color:var(--rose); font-size:16px;">${fmtBDT(tx.amount)}</strong>
+          <small style="display:block; color:var(--text-3);">${tx.date || "Not recorded"}</small>
+        </div>
+      </div>
+    `;
+  }
+
+  document.getElementById("voidReasonInput").value = "";
+  const radio = document.querySelector('input[name="voidTypeChoice"][value="correction"]');
+  if (radio) radio.checked = true;
+  updateVoidTypeUI();
+
+  const modal = document.getElementById("voidPaymentModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function updateVoidTypeUI() {
+  const voidType = document.querySelector('input[name="voidTypeChoice"]:checked')?.value || "correction";
+  const accGroup = document.getElementById("voidAccountGroup");
+  const noticeBox = document.getElementById("voidPreviewNotice");
+  if (!targetVoidTxInfo) return;
+
+  const { payment, tx } = targetVoidTxInfo;
+  const currentPaid = payment.paidAmount || 0;
+  const newPaid = Math.max(0, currentPaid - tx.amount);
+  const newBalance = Math.max(0, payment.amount - newPaid);
+
+  if (voidType === "refund") {
+    if (accGroup) accGroup.classList.remove("hidden");
+    if (noticeBox) {
+      noticeBox.innerHTML = `
+        <strong>Preview Effect (Cash Refund):</strong><br/>
+        • Paid so far will decrease from ${fmtBDT(currentPaid)} to ${fmtBDT(newPaid)}.<br/>
+        • Installment balance will increase to ${fmtBDT(newBalance)}.<br/>
+        • <strong>${fmtBDT(tx.amount)}</strong> will be deducted as an Outflow from the selected cashbook account.<br/>
+        • Original payment record will be preserved with a VOIDED status tag.
+      `;
+    }
+  } else {
+    if (accGroup) accGroup.classList.add("hidden");
+    if (noticeBox) {
+      noticeBox.innerHTML = `
+        <strong>Preview Effect (Error Correction):</strong><br/>
+        • Paid so far will decrease from ${fmtBDT(currentPaid)} to ${fmtBDT(newPaid)}.<br/>
+        • Installment balance will increase to ${fmtBDT(newBalance)}.<br/>
+        • Cashbook balance will <strong>not</strong> change (correction of entry mistake).<br/>
+        • Original payment record will be preserved with a VOIDED status tag.
+      `;
+    }
+  }
+}
+
+function closeVoidPaymentModal() {
+  const modal = document.getElementById("voidPaymentModal");
+  if (modal) modal.classList.add("hidden");
+  targetVoidTxInfo = null;
+}
+
+async function handleVoidPaymentSubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+  if (!targetVoidTxInfo) return;
+
+  const reason = document.getElementById("voidReasonInput").value.trim();
+  if (!reason) {
+    showToast("Mandatory reversal reason required!", "error");
+    return;
+  }
+
+  const voidType = document.querySelector('input[name="voidTypeChoice"]:checked')?.value || "correction";
+  const voidAccount = document.getElementById("voidAccountSelect")?.value || "bank";
+
+  const { year, monthName, memberName, tx, payment } = targetVoidTxInfo;
+
+  tx.status = "voided";
+  tx.voidReason = reason;
+  tx.voidType = voidType;
+  tx.voidedAt = new Date().toISOString();
+  tx.voidedBy = "Admin";
+
+  if (voidType === "refund") {
+    const refundEntry = {
+      id: "cbe_ref_" + Date.now(),
+      type: "outflow",
+      account: voidAccount,
+      category: "Member Cash Refund",
+      amount: tx.amount,
+      date: getDhakaDateString(),
+      reference: "REFUND-" + tx.id,
+      notes: `Cash refund to ${memberName} for voided payment (${reason})`,
+      relatedPaymentId: tx.id,
+      createdAt: new Date().toISOString(),
+      createdBy: "Admin",
+    };
+    fundCashbook.entries.push(refundEntry);
+    recalculateCashbookBalances();
+  }
+
+  const totalPaid = payment.paymentsList
+    .filter((x) => x.status !== "voided")
+    .reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  payment.paidAmount = totalPaid;
+  payment.balance = Math.max(0, payment.amount - totalPaid);
+  payment.paid = totalPaid >= payment.amount;
+
+  recalculateMemberCredits();
+
+  await logAuditAction(
+    "VOID_PAYMENT",
+    `${memberName} · ${monthName} ${year}`,
+    `Voided payment of ${fmtBDT(tx.amount)} (${voidType}): ${reason}. Balance now: ${fmtBDT(payment.balance)}.`,
+    `Paid: ${fmtBDT(totalPaid + tx.amount)}`,
+    `Paid: ${fmtBDT(totalPaid)}`
+  );
+
+  await savePaymentDataToStore();
+  closeVoidPaymentModal();
+  showToast(`Payment of ${fmtBDT(tx.amount)} voided successfully! 🛑`);
+  openPaymentDetailModal(year, monthName, memberName);
+  applyFilters();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 💳 ADVANCE CREDIT & ALLOCATION LEDGER
+// ─────────────────────────────────────────────────────────────────
+
+function recalculateMemberCredits() {
+  const members = getAllMemberNames();
+  const ledger = {};
+  members.forEach((m) => {
+    ledger[m] = {
+      available: 0,
+      totalGenerated: 0,
+      totalAllocated: 0,
+      allocations: [],
+    };
+  });
+
+  paymentData.forEach((y) => {
+    (y.months || []).forEach((m) => {
+      (m.payments || []).forEach((p) => {
+        const memberName = p.name;
+        if (!ledger[memberName]) {
+          ledger[memberName] = { available: 0, totalGenerated: 0, totalAllocated: 0, allocations: [] };
+        }
+
+        const pmtList = p.paymentsList || [];
+        let directPaid = 0;
+        let creditAllocPaid = 0;
+
+        pmtList.forEach((tx) => {
+          if (tx.status === "voided") return;
+          if (tx.isCreditAllocation) {
+            creditAllocPaid += Number(tx.amount) || 0;
+          } else {
+            directPaid += Number(tx.amount) || 0;
+          }
+        });
+
+        if (pmtList.length === 0 && p.paid) {
+          directPaid = Number(p.amount) || 1000;
+        }
+
+        const expected = Number(p.amount) || 1000;
+        const surplus = Math.max(0, directPaid - (expected - creditAllocPaid));
+        ledger[memberName].totalGenerated += surplus;
+        ledger[memberName].totalAllocated += creditAllocPaid;
+      });
+    });
+  });
+
+  Object.keys(ledger).forEach((memberName) => {
+    ledger[memberName].available = Math.max(0, ledger[memberName].totalGenerated - ledger[memberName].totalAllocated);
+  });
+
+  memberCreditLedger = ledger;
+  return ledger;
+}
+
+let activeCreditAllocMember = null;
+
+function openAllocateCreditModal(memberName) {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  recalculateMemberCredits();
+  const info = memberCreditLedger[memberName] || { available: 0 };
+  if (info.available <= 0) {
+    showToast(`${memberName} does not have any available advance credit to allocate!`, "warning");
+    return;
+  }
+
+  activeCreditAllocMember = memberName;
+  const headerCard = document.getElementById("allocCreditHeaderCard");
+  if (headerCard) {
+    headerCard.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>${memberName}</strong>
+          <small style="display:block; color:var(--text-3);">Surplus Advance Credit Pool</small>
+        </div>
+        <div style="text-align:right;">
+          <strong style="color:var(--accent-teal); font-size:18px;">${fmtBDT(info.available)}</strong>
+          <small style="display:block; color:var(--text-3);">Available to allocate</small>
+        </div>
+      </div>
+    `;
+  }
+
+  const select = document.getElementById("allocTargetMonthSelect");
+  if (select) {
+    select.innerHTML = "";
+    let countUnpaid = 0;
+    paymentData.forEach((y) => {
+      (y.months || []).forEach((m) => {
+        const p = (m.payments || []).find((x) => x.name === memberName);
+        if (p) {
+          const norm = normalizePaymentRecord(p, m.dueDate);
+          if (norm.balance > 0) {
+            countUnpaid++;
+            select.innerHTML += `<option value="${y.year}|${m.month}|${norm.balance}">${m.month} ${y.year} (Remaining: ${fmtBDT(norm.balance)})</option>`;
+          }
+        }
+      });
+    });
+
+    if (countUnpaid === 0) {
+      showToast(`${memberName} has no outstanding unpaid installments!`, "info");
+      return;
+    }
+  }
+
+  const amtInput = document.getElementById("allocAmountInput");
+  if (amtInput && select) {
+    const firstOption = select.options[0]?.value;
+    const targetBalance = firstOption ? parseFloat(firstOption.split("|")[2]) : info.available;
+    amtInput.value = Math.min(info.available, targetBalance);
+  }
+
+  updateAllocCreditPreview();
+  const modal = document.getElementById("allocateCreditModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function updateAllocCreditPreview() {
+  const box = document.getElementById("allocPreviewBox");
+  const select = document.getElementById("allocTargetMonthSelect");
+  const amtInput = document.getElementById("allocAmountInput");
+  if (!box || !select || !amtInput || !activeCreditAllocMember) return;
+
+  const memberName = activeCreditAllocMember;
+  const info = memberCreditLedger[memberName] || { available: 0 };
+  const allocAmount = parseFloat(amtInput.value) || 0;
+  const selectedVal = select.value;
+  if (!selectedVal) return;
+
+  const [tYear, tMonth, tBalanceStr] = selectedVal.split("|");
+  const tBalance = parseFloat(tBalanceStr) || 0;
+
+  if (allocAmount > info.available) {
+    box.innerHTML = `<span style="color:var(--rose);"><i class="fas fa-exclamation-triangle"></i> Amount exceeds available credit (${fmtBDT(info.available)})!</span>`;
+    return;
+  }
+  if (allocAmount <= 0) {
+    box.innerHTML = `<span style="color:var(--text-3);">Enter a valid allocation amount.</span>`;
+    return;
+  }
+
+  const remainingCredit = info.available - allocAmount;
+  const newTargetBalance = Math.max(0, tBalance - allocAmount);
+
+  box.innerHTML = `
+    <div style="font-size:12px; line-height:1.6;">
+      <div>• Applying <strong>${fmtBDT(allocAmount)}</strong> from ${memberName}'s surplus credit to <strong>${tMonth} ${tYear}</strong>.</div>
+      <div>• Target balance will decrease from <strong>${fmtBDT(tBalance)}</strong> to <strong>${fmtBDT(newTargetBalance)}</strong>.</div>
+      <div>• Remaining available credit after allocation: <strong>${fmtBDT(remainingCredit)}</strong>.</div>
+      <div style="color:var(--text-3); margin-top:4px;">* Internal credit allocation does not record duplicate cash or inflate total fund collections.</div>
+    </div>
+  `;
+}
+
+function closeAllocateCreditModal() {
+  const modal = document.getElementById("allocateCreditModal");
+  if (modal) modal.classList.add("hidden");
+  activeCreditAllocMember = null;
+}
+
+async function handleAllocateCreditSubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+  if (!activeCreditAllocMember) return;
+
+  const memberName = activeCreditAllocMember;
+  const select = document.getElementById("allocTargetMonthSelect");
+  const amtInput = document.getElementById("allocAmountInput");
+  const allocAmount = parseFloat(amtInput.value) || 0;
+  const [tYear, tMonth] = (select.value || "").split("|");
+  const year = parseInt(tYear);
+
+  const info = memberCreditLedger[memberName] || { available: 0 };
+  if (allocAmount <= 0 || allocAmount > info.available) {
+    showToast("Invalid allocation amount!", "error");
+    return;
+  }
+
+  const rec = getCycleReconciliation(year, tMonth);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${tMonth} ${year} is locked & reconciled. Cannot allocate credit without unlocking period. 🔒`, "error");
+    return;
+  }
+
+  const yearData = paymentData.find((y) => y.year == year);
+  const monthData = yearData?.months.find((m) => m.month === tMonth);
+  const payment = monthData?.payments.find((p) => p.name === memberName);
+
+  if (!payment) {
+    showToast("Target installment not found!", "error");
+    return;
+  }
+
+  if (!payment.paymentsList) {
+    payment.paymentsList = [];
+    if (payment.paid && payment.paidAmount > 0) {
+      payment.paymentsList.push({
+        id: "pmt_legacy",
+        amount: payment.paidAmount,
+        date: "Legacy Recorded",
+        method: "Legacy Method",
+        reference: "LEGACY",
+        receiptRef: "",
+        verified: true,
+        verifiedBy: "Baseline",
+      });
+    }
+  }
+
+  const newTx = {
+    id: "pmt_alloc_" + Date.now(),
+    amount: allocAmount,
+    date: getDhakaDateString(),
+    method: "Advance Credit Allocation",
+    reference: `CREDIT-ALLOC`,
+    receiptRef: "",
+    isCreditAllocation: true,
+    verified: true,
+    verifiedBy: "Shared Admin Session",
+    notes: `Allocated from advance credit surplus`,
+  };
+
+  payment.paymentsList.push(newTx);
+
+  const totalPaid = payment.paymentsList
+    .filter((x) => x.status !== "voided")
+    .reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  payment.paidAmount = totalPaid;
+  payment.balance = Math.max(0, payment.amount - totalPaid);
+  payment.paid = totalPaid >= payment.amount;
+
+  recalculateMemberCredits();
+  await logAuditAction(
+    "ALLOCATE_CREDIT",
+    `${memberName} · ${tMonth} ${year}`,
+    `Allocated ${fmtBDT(allocAmount)} from member credit surplus to ${tMonth} ${year}. Balance now: ${fmtBDT(payment.balance)}.`
+  );
+  await savePaymentDataToStore();
+  closeAllocateCreditModal();
+  showToast(`Successfully allocated ${fmtBDT(allocAmount)} credit for ${memberName}! 💳`);
+  applyFilters();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 🔒 MONTHLY CLOSE & RECONCILIATION
+// ─────────────────────────────────────────────────────────────────
+
+function getCycleReconciliation(year, monthName) {
+  const key = `${year}-${monthName}`;
+  return (monthlyReconciliations || []).find((r) => r.cycleKey === key);
+}
+
+function initReconciliationCycles() {
+  const select = document.getElementById("recCycleSelect");
+  if (!select) return;
+  const currentVal = select.value;
+  select.innerHTML = "";
+
+  paymentData.forEach((y) => {
+    (y.months || []).forEach((m) => {
+      const key = `${y.year}-${m.month}`;
+      const rec = getCycleReconciliation(y.year, m.month);
+      const isClosed = rec && rec.isClosed;
+      select.innerHTML += `<option value="${key}">${m.month} ${y.year} ${isClosed ? "🔒 (Closed)" : "🔓 (Open)"}</option>`;
+    });
+  });
+
+  if (currentVal && select.querySelector(`option[value="${currentVal}"]`)) {
+    select.value = currentVal;
+  }
+}
+
+function updateReconciliationView() {
+  const select = document.getElementById("recCycleSelect");
+  const badge = document.getElementById("recCycleStatusBadge");
+  const formContainer = document.getElementById("recFormContainer");
+  if (!select || !badge || !formContainer) return;
+
+  const key = select.value;
+  if (!key) return;
+
+  const [yearStr, monthName] = key.split("-");
+  const year = parseInt(yearStr);
+  const rec = getCycleReconciliation(year, monthName);
+  const isClosed = rec && rec.isClosed;
+
+  if (isClosed) {
+    badge.className = "rec-status-pill closed";
+    badge.innerHTML = `<i class="fas fa-lock"></i> Reconciled & Closed`;
+  } else {
+    badge.className = "rec-status-pill open";
+    badge.innerHTML = `<i class="fas fa-lock-open"></i> Period Open`;
+  }
+
+  recalculateCashbookBalances();
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
+
+  const stBank = rec?.statementBalances?.bank ?? bankAcc.balance;
+  const stCash = rec?.statementBalances?.cash ?? cashAcc.balance;
+  const stBkash = rec?.statementBalances?.bkash ?? bkashAcc.balance;
+  const stNagad = rec?.statementBalances?.nagad ?? nagadAcc.balance;
+
+  const varBank = stBank - bankAcc.balance;
+  const varCash = stCash - cashAcc.balance;
+  const varBkash = stBkash - bkashAcc.balance;
+  const varNagad = stNagad - nagadAcc.balance;
+
+  const renderVariancePill = (v) => {
+    if (v === 0) return `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`;
+    return `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(v)}</span>`;
+  };
+
+  formContainer.innerHTML = `
+    <table class="rec-compare-table">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Cashbook Balance</th>
+          <th>Verified Statement Balance (৳)</th>
+          <th>Variance Check</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><i class="fas fa-university"></i> Islami Bank</td>
+          <td><strong>${fmtBDT(bankAcc.balance)}</strong></td>
+          <td>
+            <input type="number" id="recStmtBank" class="modern-input" value="${stBank}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+          </td>
+          <td id="recVarBankCell">${renderVariancePill(varBank)}</td>
+        </tr>
+        <tr>
+          <td><i class="fas fa-money-bill-wave"></i> Cash Drawer</td>
+          <td><strong>${fmtBDT(cashAcc.balance)}</strong></td>
+          <td>
+            <input type="number" id="recStmtCash" class="modern-input" value="${stCash}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+          </td>
+          <td id="recVarCashCell">${renderVariancePill(varCash)}</td>
+        </tr>
+        <tr>
+          <td><i class="fas fa-mobile-alt"></i> bKash Wallet</td>
+          <td><strong>${fmtBDT(bkashAcc.balance)}</strong></td>
+          <td>
+            <input type="number" id="recStmtBkash" class="modern-input" value="${stBkash}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+          </td>
+          <td id="recVarBkashCell">${renderVariancePill(varBkash)}</td>
+        </tr>
+        <tr>
+          <td><i class="fas fa-mobile-alt"></i> Nagad Wallet</td>
+          <td><strong>${fmtBDT(nagadAcc.balance)}</strong></td>
+          <td>
+            <input type="number" id="recStmtNagad" class="modern-input" value="${stNagad}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+          </td>
+          <td id="recVarNagadCell">${renderVariancePill(varNagad)}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="form-group modern-field" style="margin-top: 14px;">
+      <label for="recNotesInput"><i class="fas fa-comment-alt"></i> Reconciliation Notes / Statement Ref</label>
+      <input type="text" id="recNotesInput" class="modern-input" value="${rec?.notes || ""}" placeholder="e.g. Verified with IBBL statement #12345" ${isClosed ? "disabled" : ""} />
+    </div>
+
+    <div class="rec-actions-row" style="margin-top:16px;">
+      ${!isClosed ? `
+        <button type="button" class="btn-submit" onclick="handleReconcileCloseSubmit('${key}')" style="background:var(--accent-teal); color:#000;">
+          <i class="fas fa-lock"></i> Reconcile & Lock Cycle
+        </button>
+      ` : `
+        <button type="button" class="btn-submit" onclick="openReopenMonthModal('${key}')" style="background:var(--amber); color:#000;">
+          <i class="fas fa-unlock"></i> Unlock Cycle for Corrections
+        </button>
+      `}
+    </div>
+  `;
+
+  renderReconciliationHistoryTable();
+}
+
+function recalculateRecVariances() {
+  recalculateCashbookBalances();
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
+
+  const stBank = parseFloat(document.getElementById("recStmtBank")?.value) || 0;
+  const stCash = parseFloat(document.getElementById("recStmtCash")?.value) || 0;
+  const stBkash = parseFloat(document.getElementById("recStmtBkash")?.value) || 0;
+  const stNagad = parseFloat(document.getElementById("recStmtNagad")?.value) || 0;
+
+  const renderVariancePill = (v) => {
+    if (v === 0) return `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`;
+    return `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(v)}</span>`;
+  };
+
+  const cB = document.getElementById("recVarBankCell");
+  const cC = document.getElementById("recVarCashCell");
+  const cBk = document.getElementById("recVarBkashCell");
+  const cN = document.getElementById("recVarNagadCell");
+
+  if (cB) cB.innerHTML = renderVariancePill(stBank - bankAcc.balance);
+  if (cC) cC.innerHTML = renderVariancePill(stCash - cashAcc.balance);
+  if (cBk) cBk.innerHTML = renderVariancePill(stBkash - bkashAcc.balance);
+  if (cN) cN.innerHTML = renderVariancePill(stNagad - nagadAcc.balance);
+}
+
+async function handleReconcileCloseSubmit(cycleKey) {
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const [yearStr, monthName] = cycleKey.split("-");
+  const year = parseInt(yearStr);
+
+  recalculateCashbookBalances();
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
+
+  const stBank = parseFloat(document.getElementById("recStmtBank")?.value) || 0;
+  const stCash = parseFloat(document.getElementById("recStmtCash")?.value) || 0;
+  const stBkash = parseFloat(document.getElementById("recStmtBkash")?.value) || 0;
+  const stNagad = parseFloat(document.getElementById("recStmtNagad")?.value) || 0;
+  const notes = document.getElementById("recNotesInput")?.value.trim() || "";
+
+  const record = {
+    cycleKey,
+    year,
+    month: monthName,
+    isClosed: true,
+    closedAt: new Date().toISOString(),
+    closedBy: "Admin",
+    statementBalances: { bank: stBank, cash: stCash, bkash: stBkash, nagad: stNagad },
+    bookBalances: { bank: bankAcc.balance, cash: cashAcc.balance, bkash: bkashAcc.balance, nagad: nagadAcc.balance },
+    variances: { bank: stBank - bankAcc.balance, cash: stCash - cashAcc.balance, bkash: stBkash - bkashAcc.balance, nagad: stNagad - nagadAcc.balance },
+    notes,
+    reopenHistory: [],
+  };
+
+  const existingIdx = monthlyReconciliations.findIndex((r) => r.cycleKey === cycleKey);
+  if (existingIdx !== -1) {
+    record.reopenHistory = monthlyReconciliations[existingIdx].reopenHistory || [];
+    monthlyReconciliations[existingIdx] = record;
+  } else {
+    monthlyReconciliations.push(record);
+  }
+
+  await logAuditAction(
+    "CLOSE_MONTH_CYCLE",
+    `${monthName} ${year}`,
+    `Reconciled and locked cycle ${monthName} ${year}. Notes: ${notes || "None"}.`
+  );
+
+  await savePaymentDataToStore();
+  initReconciliationCycles();
+  updateReconciliationView();
+  showToast(`Cycle ${monthName} ${year} reconciled and locked! 🔒`);
+}
+
+let targetReopenCycleKey = null;
+
+function openReopenMonthModal(cycleKey) {
+  if (currentRole !== "admin") return;
+  targetReopenCycleKey = cycleKey;
+  const [yearStr, monthName] = cycleKey.split("-");
+  const summary = document.getElementById("reopenCycleSummary");
+  if (summary) {
+    summary.innerHTML = `
+      <strong>Unlock Reconciled Cycle: ${monthName} ${yearStr}</strong><br/>
+      <small style="color:var(--text-3);">Opening a locked cycle permits payment edits and reversals. Reopening requires a valid reason and admin passcode.</small>
+    `;
+  }
+  document.getElementById("reopenReasonInput").value = "";
+  document.getElementById("reopenPasscodeInput").value = "";
+  const modal = document.getElementById("reopenMonthModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeReopenMonthModal() {
+  const modal = document.getElementById("reopenMonthModal");
+  if (modal) modal.classList.add("hidden");
+  targetReopenCycleKey = null;
+}
+
+async function handleReopenMonthSubmit(e) {
+  e.preventDefault();
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+  if (!targetReopenCycleKey) return;
+
+  const reason = document.getElementById("reopenReasonInput").value.trim();
+  const passcode = document.getElementById("reopenPasscodeInput").value;
+
+  if (passcode !== ADMIN_PASSWORD) {
+    showToast("Invalid admin passcode! Reopening denied.", "error");
+    return;
+  }
+  if (!reason) {
+    showToast("Mandatory reopening justification required!", "error");
+    return;
+  }
+
+  const rec = monthlyReconciliations.find((r) => r.cycleKey === targetReopenCycleKey);
+  if (rec) {
+    rec.isClosed = false;
+    rec.reopenHistory = rec.reopenHistory || [];
+    rec.reopenHistory.push({
+      reopenedAt: new Date().toISOString(),
+      reopenedBy: "Admin",
+      reason,
+    });
+  }
+
+  const [yearStr, monthName] = targetReopenCycleKey.split("-");
+  await logAuditAction(
+    "REOPEN_MONTH_CYCLE",
+    `${monthName} ${yearStr}`,
+    `Unlocked reconciled cycle ${monthName} ${yearStr}. Reason: ${reason}`
+  );
+
+  await savePaymentDataToStore();
+  closeReopenMonthModal();
+  initReconciliationCycles();
+  updateReconciliationView();
+  showToast(`Cycle ${monthName} ${yearStr} unlocked! 🔓`);
+}
+
+function renderReconciliationHistoryTable() {
+  const container = document.getElementById("recHistoryContainer");
+  if (!container) return;
+
+  if (!monthlyReconciliations || monthlyReconciliations.length === 0) {
+    container.innerHTML = `<div class="empty" style="padding:16px;">No reconciliation snapshots saved yet.</div>`;
+    return;
+  }
+
+  const rows = monthlyReconciliations.map((r) => {
+    const totalVar = (r.variances.bank || 0) + (r.variances.cash || 0) + (r.variances.bkash || 0) + (r.variances.nagad || 0);
+    return `
+      <tr>
+        <td><strong>${r.month} ${r.year}</strong></td>
+        <td><span class="rec-status-pill ${r.isClosed ? "closed" : "open"}" style="font-size:10px;">${r.isClosed ? "Closed 🔒" : "Open 🔓"}</span></td>
+        <td>${formatAuditTimestamp(r.closedAt)}</td>
+        <td>${fmtBDT(r.statementBalances.bank + r.statementBalances.cash + r.statementBalances.bkash + r.statementBalances.nagad)}</td>
+        <td>${totalVar === 0 ? '<span style="color:var(--green);">৳0 (Balanced)</span>' : `<span style="color:var(--rose);">${fmtBDT(totalVar)}</span>`}</td>
+        <td><small>${r.notes || "—"}</small></td>
+      </tr>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Cycle</th>
+          <th>Status</th>
+          <th>Reconciled At</th>
+          <th>Total Statement</th>
+          <th>Net Variance</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 🧾 PAYMENT RECEIPTS (PRINTABLE / PDF)
+// ─────────────────────────────────────────────────────────────────
+
+function getOrGenerateReceiptNumber(tx, year, monthName) {
+  if (tx.receiptNumber) return tx.receiptNumber;
+  const monthIdx = (CALENDAR_MONTHS.indexOf(monthName) + 1).toString().padStart(2, "0");
+  const cleanId = String(tx.id || "").replace(/[^0-9]/g, "");
+  const suffix = cleanId ? cleanId.slice(-4).padStart(4, "0") : String(Math.floor(1000 + Math.random() * 9000));
+  const rcpNum = `RCP-${year}${monthIdx}-${suffix}`;
+  tx.receiptNumber = rcpNum;
+  return rcpNum;
+}
+
+function openReceiptModal(year, monthName, memberName, paymentId) {
+  const yearData = paymentData.find((y) => y.year == year);
+  const monthData = yearData?.months.find((m) => m.month === monthName);
+  const payment = monthData?.payments.find((p) => p.name === memberName);
+  const tx = payment?.paymentsList?.find((t) => t.id === paymentId) || {
+    id: "legacy",
+    amount: payment?.paidAmount || 1000,
+    date: "Preserved Baseline",
+    method: "Bank / Direct",
+    reference: "BASELINE-01",
+    verified: true,
+    verifiedBy: "System",
+  };
+
+  const receiptNumber = getOrGenerateReceiptNumber(tx, year, monthName);
+  const isVoided = tx.status === "voided";
+
+  const container = document.getElementById("receiptPrintContainer");
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="receipt-slip ${isVoided ? "is-voided" : ""}">
+      ${isVoided ? `<div class="receipt-void-watermark">VOIDED / REVERSED</div>` : ""}
+      
+      <div class="receipt-header">
+        <div class="receipt-brand">
+          <h2>KC-KISTI COOPERATIVE FUND</h2>
+          <p>Official Member Installment Voucher & Receipt</p>
+        </div>
+        <div class="receipt-num-box">
+          <div class="rcp-label">Receipt Voucher #</div>
+          <div class="rcp-num">${receiptNumber}</div>
+        </div>
+      </div>
+
+      <div class="receipt-meta-grid">
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Member Name:</span>
+          <strong class="rcp-val">${memberName}</strong>
+        </div>
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Installment Cycle:</span>
+          <strong class="rcp-val">${monthName} ${year}</strong>
+        </div>
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Payment Date:</span>
+          <strong class="rcp-val">${tx.date || "Not recorded"}</strong>
+        </div>
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Payment Method:</span>
+          <strong class="rcp-val">${tx.method || "Cash / Direct"}</strong>
+        </div>
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Transaction Reference:</span>
+          <strong class="rcp-val">${tx.reference || "N/A"}</strong>
+        </div>
+        <div class="rcp-meta-item">
+          <span class="rcp-lbl">Verification Status:</span>
+          <strong class="rcp-val" style="color:var(--green);">${tx.verified ? (tx.verifiedBy || "Verified") : "Unverified"}</strong>
+        </div>
+      </div>
+
+      <div class="receipt-amount-banner">
+        <span class="rcp-amt-label">Amount Received:</span>
+        <span class="rcp-amt-val">${fmtBDT(tx.amount)}</span>
+      </div>
+
+      ${isVoided ? `
+        <div class="receipt-void-details">
+          <strong>Notice: This payment transaction has been VOIDED.</strong><br/>
+          <span>Reason: ${tx.voidReason || "Administrative Correction"}</span> · 
+          <span>Voided At: ${formatAuditTimestamp(tx.voidedAt)}</span>
+        </div>
+      ` : ""}
+
+      <div class="receipt-footer">
+        <div class="rcp-sig-box">
+          <div class="rcp-sig-line"></div>
+          <span>Member Signature</span>
+        </div>
+        <div class="rcp-sig-box">
+          <div class="rcp-sig-line"></div>
+          <span>Authorized Fund Admin</span>
+        </div>
+      </div>
+
+      <div class="receipt-stamp-note">
+        Generated electronically via KC-Kisti Tracker on ${getDhakaDateString()} (${getDhakaTimeString()} Asia/Dhaka).
+      </div>
+    </div>
+  `;
+
+  const modal = document.getElementById("receiptModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function printReceipt() {
+  window.print();
+}
+
+function closeReceiptModal() {
+  const modal = document.getElementById("receiptModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 📩 CUSTOMIZABLE REMINDER DRAFTS
+// ─────────────────────────────────────────────────────────────────
+
+let activeReminderInfo = null;
+
+function openReminderModal(year, monthName, memberName) {
+  const yearData = paymentData.find((y) => y.year == year);
+  const monthData = yearData?.months.find((m) => m.month === monthName);
+  const rawPmt = monthData?.payments.find((p) => p.name === memberName);
+  if (!rawPmt) return;
+
+  const p = normalizePaymentRecord(rawPmt, monthData.dueDate);
+  if (p.balance <= 0) {
+    showToast(`${memberName} has already paid in full for ${monthName} ${year}!`, "info");
+    return;
+  }
+
+  activeReminderInfo = {
+    year,
+    monthName,
+    memberName,
+    balance: p.balance,
+    dueDate: monthData.dueDate,
+  };
+
+  const pill = document.getElementById("reminderMetaPill");
+  if (pill) {
+    pill.innerHTML = `
+      <span><strong>${memberName}</strong></span> · 
+      <span>${monthName} ${year}</span> · 
+      <span style="color:var(--rose);">Unpaid Balance: ${fmtBDT(p.balance)}</span>
+      ${monthData.dueDate ? ` · Due: ${monthData.dueDate}` : ""}
+    `;
+  }
+
+  switchReminderLang("bn");
+  const modal = document.getElementById("reminderModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function switchReminderLang(lang) {
+  if (!activeReminderInfo) return;
+  const { year, monthName, memberName, balance, dueDate } = activeReminderInfo;
+  const textarea = document.getElementById("reminderTextarea");
+  document.querySelectorAll(".reminder-tab").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.lang === lang);
+  });
+
+  if (!textarea) return;
+
+  if (lang === "bn") {
+    textarea.value = `আসসালামু আলাইকুম ${memberName} ভাই,\nKC-কিস্তি ফান্ডের ${monthName} ${year} মাসের কিস্তির বকেয়া পরিমাণ ${fmtBDT(balance)}।${dueDate ? ` নির্ধারিত শেষ তারিখ ছিল ${dueDate}।` : ""}\nঅনুগ্রহ করে সময়মতো পরিশোধ করার অনুরোধ করা হলো। ধন্যবাদ!`;
+  } else {
+    textarea.value = `Assalamu Alaikum ${memberName},\nThis is a gentle reminder that your KC-Kisti installment for ${monthName} ${year} has an outstanding balance of ${fmtBDT(balance)}.${dueDate ? ` Due date: ${dueDate}.` : ""}\nPlease arrange to complete your payment at your earliest convenience. Thank you!`;
+  }
+}
+
+function copyReminderDraft() {
+  const textarea = document.getElementById("reminderTextarea");
+  if (!textarea) return;
+  navigator.clipboard.writeText(textarea.value).then(() => {
+    showToast("Reminder draft copied to clipboard! 📋");
+  }).catch(() => {
+    showToast("Failed to copy automatically. Please copy manually.", "warning");
+  });
+}
+
+function shareReminderDraft() {
+  const textarea = document.getElementById("reminderTextarea");
+  if (!textarea) return;
+  if (navigator.share) {
+    navigator.share({
+      title: "KC-Kisti Installment Reminder",
+      text: textarea.value,
+    }).catch((err) => {
+      console.log("Device share cancelled or failed:", err);
+    });
+  } else {
+    copyReminderDraft();
+  }
+}
+
+function closeReminderModal() {
+  const modal = document.getElementById("reminderModal");
+  if (modal) modal.classList.add("hidden");
+  activeReminderInfo = null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 💾 BACKUP & SAFE RESTORE (VERSIONED JSON v2.0)
+// ─────────────────────────────────────────────────────────────────
+
+function exportFullSystemBackup() {
+  const backupObject = {
+    version: "2.0",
+    appName: "KC-Kisti Payment Tracker",
+    exportedAt: new Date().toISOString(),
+    exportedBy: currentRole,
+    paymentData: paymentData,
+    auditLogs: auditLogs,
+    fundCashbook: fundCashbook,
+    memberCreditLedger: memberCreditLedger,
+    monthlyReconciliations: monthlyReconciliations,
+  };
+
+  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupObject, null, 2));
+  const dlAnchor = document.createElement("a");
+  dlAnchor.setAttribute("href", dataStr);
+  dlAnchor.setAttribute("download", `kc-kisti-backup-v2.0-${getDhakaDateString()}.json`);
+  document.body.appendChild(dlAnchor);
+  dlAnchor.click();
+  dlAnchor.remove();
+
+  showToast("Full System Backup (v2.0 JSON) downloaded! 💾");
+}
+
+function handleBackupFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    try {
+      const parsed = JSON.parse(event.target.result);
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("Invalid JSON backup file structure.");
+      }
+
+      let pData = parsed.paymentData;
+      if (!pData && Array.isArray(parsed)) {
+        pData = parsed;
+      }
+
+      if (!Array.isArray(pData)) {
+        throw new Error("Missing or malformed paymentData array.");
+      }
+
+      pendingBackupJson = {
+        version: parsed.version || "1.0 (Legacy)",
+        exportedAt: parsed.exportedAt || "Unknown date",
+        paymentData: pData,
+        auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+        fundCashbook: parsed.fundCashbook || fundCashbook,
+        memberCreditLedger: parsed.memberCreditLedger || {},
+        monthlyReconciliations: Array.isArray(parsed.monthlyReconciliations) ? parsed.monthlyReconciliations : [],
+      };
+
+      let totalYears = pData.length;
+      let totalMonths = pData.reduce((s, y) => s + (y.months ? y.months.length : 0), 0);
+      let totalPaidBDT = 0;
+      pData.forEach((y) => {
+        (y.months || []).forEach((m) => {
+          (m.payments || []).forEach((p) => {
+            if (p.paid) totalPaidBDT += Number(p.amount) || 1000;
+          });
+        });
+      });
+
+      const previewContent = document.getElementById("restorePreviewContent");
+      if (previewContent) {
+        previewContent.innerHTML = `
+          <div class="dry-run-card" style="background:var(--surface-2); padding:14px; border-radius:8px; line-height:1.6; font-size:13px;">
+            <div style="font-weight:700; color:var(--accent-teal); margin-bottom:8px;">
+              <i class="fas fa-check-circle"></i> Schema Validation Successful (Format: ${pendingBackupJson.version})
+            </div>
+            <div>• Exported At: <strong>${pendingBackupJson.exportedAt}</strong></div>
+            <div>• Years in Backup: <strong>${totalYears}</strong> | Monthly Cycles: <strong>${totalMonths}</strong></div>
+            <div>• Verified Collections in File: <strong>${fmtBDT(totalPaidBDT)}</strong></div>
+            <div>• Cashbook Movements: <strong>${pendingBackupJson.fundCashbook.entries ? pendingBackupJson.fundCashbook.entries.length : 0}</strong></div>
+            <div>• Reconciliation Snapshots: <strong>${pendingBackupJson.monthlyReconciliations.length}</strong></div>
+            <div style="margin-top:10px; color:var(--amber); font-size:12px;">
+              <i class="fas fa-shield-alt"></i> <strong>Safety Snapshot:</strong> A safety rollback snapshot of your current local state will be automatically created before applying.
+            </div>
+          </div>
+        `;
+      }
+
+      document.getElementById("restorePasscodeInput").value = "";
+      const modal = document.getElementById("restorePreviewModal");
+      if (modal) modal.classList.remove("hidden");
+    } catch (err) {
+      console.error("Backup file parse error:", err);
+      showToast("Failed to parse backup file: " + err.message, "error");
+    } finally {
+      e.target.value = "";
+    }
+  };
+  reader.readAsText(file);
+}
+
+function closeRestorePreviewModal() {
+  const modal = document.getElementById("restorePreviewModal");
+  if (modal) modal.classList.add("hidden");
+  pendingBackupJson = null;
+}
+
+async function applyRestoreData() {
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+  if (!pendingBackupJson) return;
+
+  const passcode = document.getElementById("restorePasscodeInput")?.value;
+  if (passcode !== ADMIN_PASSWORD) {
+    showToast("Invalid admin passcode! Restore cancelled.", "error");
+    return;
+  }
+
+  const safetySnapshot = {
+    timestamp: new Date().toISOString(),
+    paymentData: paymentData,
+    fundCashbook: fundCashbook,
+    memberCreditLedger: memberCreditLedger,
+    monthlyReconciliations: monthlyReconciliations,
+    auditLogs: auditLogs,
+  };
+  localStorage.setItem("kisti_pre_restore_safety_snapshot", JSON.stringify(safetySnapshot));
+
+  paymentData = pendingBackupJson.paymentData;
+  auditLogs = pendingBackupJson.auditLogs;
+  fundCashbook = pendingBackupJson.fundCashbook;
+  memberCreditLedger = pendingBackupJson.memberCreditLedger;
+  monthlyReconciliations = pendingBackupJson.monthlyReconciliations;
+
+  await logAuditAction(
+    "RESTORE_BACKUP",
+    `Backup Version ${pendingBackupJson.version}`,
+    `Restored system state from backup file. Safety snapshot saved.`
+  );
+
+  await savePaymentDataToStore();
+  closeRestorePreviewModal();
+  showToast("Backup restored successfully! 🎉");
+  location.reload();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 📑 REPORTS SUB-TAB NAVIGATION
+// ─────────────────────────────────────────────────────────────────
+
+function switchReportsSubTab(subtab) {
+  activeReportsSubTab = subtab;
+  sessionStorage.setItem("kisti_reports_subtab", subtab);
+
+  document.querySelectorAll(".reports-subtab").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.subtab === subtab);
+  });
+
+  const subpanelMap = {
+    analytics: "subtab-analytics",
+    cashbook: "subtab-cashbook",
+    reconciliation: "subtab-reconciliation",
+    backup: "subtab-backup",
+    audit: "subtab-audit",
+  };
+
+  Object.keys(subpanelMap).forEach((key) => {
+    const el = document.getElementById(subpanelMap[key]);
+    if (el) {
+      el.classList.toggle("hidden", key !== subtab);
+      el.classList.toggle("active", key === subtab);
+    }
+  });
+
+  if (subtab === "cashbook") {
+    renderCashbookKPIs();
+    renderCashbookTable();
+  } else if (subtab === "reconciliation") {
+    initReconciliationCycles();
+    updateReconciliationView();
+  } else if (subtab === "audit") {
+    renderAuditHistoryTable();
+  }
+}
+
+function navigateToReportsSubtab(subtab) {
+  switchNavTab("reports", true);
+  switchReportsSubTab(subtab);
 }

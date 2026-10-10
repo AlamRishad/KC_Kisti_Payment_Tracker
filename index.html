@@ -3,7 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Kisti Dashboard</title>
+    <title>KC-Kisti Payment Tracker</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="icon.svg" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+    <meta name="theme-color" content="#0b1320" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link
       href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500&display=swap"
       rel="stylesheet"
@@ -21,6 +27,15 @@
     />
   </head>
   <body>
+    <!-- ⚠️ Offline / Stale Data Alert Banner -->
+    <div id="offlineBanner" class="offline-banner hidden" style="display: none;" role="alert">
+      <div class="offline-banner-content">
+        <i class="fas fa-wifi-slash" aria-hidden="true"></i>
+        <span id="offlineBannerText">Offline Mode · Viewing cached data. Financial modifications require an active connection.</span>
+        <button type="button" class="btn-offline-retry" onclick="retryDbConnection()">Retry Connection</button>
+      </div>
+    </div>
+
     <div class="wrapper">
       <!-- 🔔 Notification Toast -->
       <div id="toast" class="toast hidden">
@@ -118,6 +133,10 @@
             </button>
           </div>
 
+          <!-- PWA Install Button -->
+          <button class="btn-icon hidden" id="pwaInstallHeaderBtn" onclick="triggerPwaInstall()" title="Install KC-Kisti App on device" aria-label="Install App" style="color:var(--accent-teal);">
+            <i class="fas fa-download" aria-hidden="true"></i>
+          </button>
           <!-- Theme Toggle -->
           <button class="btn-icon" id="themeToggle" title="Toggle Theme" aria-label="Toggle dark/light theme">
             <i class="fas fa-moon" aria-hidden="true"></i>
@@ -366,6 +385,22 @@
           <!-- Dynamically populated -->
         </div>
 
+        <!-- 💰 Fund Liquidity Overview Strip (Links to Cashbook in Reports) -->
+        <div class="fund-overview-strip" id="fundOverviewStrip">
+          <div class="fund-strip-header">
+            <div class="fund-strip-title">
+              <i class="fas fa-wallet" style="color:var(--accent-teal);" aria-hidden="true"></i>
+              <span>Fund Liquidity & Accounts</span>
+            </div>
+            <button class="btn-text-action" onclick="navigateToReportsSubtab('cashbook')" type="button">
+              <span>View Cashbook</span> <i class="fas fa-arrow-right" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="fund-strip-cards" id="fundStripCards">
+            <!-- Dynamically populated: Bank, Cash, Mobile Wallets, Total Available Funds -->
+          </div>
+        </div>
+
         <!-- 📈 Progress Bar -->
         <div class="progress-section">
           <div class="progress-header">
@@ -409,7 +444,7 @@
       <!-- ═════════ SECTION 3: REPORTS & ANALYTICS ═════════ -->
       <section id="sec-reports" class="tab-pane hidden" role="tabpanel" aria-labelledby="tab-reports">
         <div class="tab-pane-header">
-          <h2><i class="fas fa-chart-line" aria-hidden="true"></i> Reports & Analytics</h2>
+          <h2><i class="fas fa-chart-line" aria-hidden="true"></i> Reports & Management</h2>
           <div class="reports-header-actions mobile-only-flex">
             <button class="btn-export" onclick="exportToCSV()" title="Export filtered records to CSV">
               <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
@@ -419,72 +454,236 @@
             </button>
           </div>
         </div>
-        <div class="section-label">
-          <span>Analytics & Visualizations</span>
-          <small id="analyticsScopeLabel" class="section-scope-label">Yearly & Status Breakdown</small>
-        </div>
-        <div class="charts">
-          <div class="chart-card">
-            <div class="chart-header">
-              <h3>
-                <span class="dot" style="background: var(--accent)" aria-hidden="true"></span>
-                Collection Breakdown
-              </h3>
-              <span class="chart-scope-sub" id="chartBreakdownScope">Filtered Scope</span>
-            </div>
-            <div class="chart-canvas-wrap">
-              <canvas id="pieChart"></canvas>
-            </div>
-          </div>
-          <div class="chart-card">
-            <div class="chart-header">
-              <h3>
-                <span class="dot" style="background: var(--accent2)" aria-hidden="true"></span>
-                Monthly Performance Trend
-              </h3>
-              <span class="chart-scope-sub" id="chartTrendScope">Allocated Installments vs Collected</span>
-            </div>
-            <div class="chart-canvas-wrap">
-              <canvas id="barChart"></canvas>
-            </div>
-            <div class="chart-caption-hint">
-              * Displays expected, collected, and outstanding amounts allocated to each installment cycle in the selected year.
-            </div>
-          </div>
+
+        <!-- 📑 Reports Sub-navigation Pills -->
+        <div class="reports-subnav" role="tablist" aria-label="Reports sub-sections">
+          <button class="reports-subtab active" data-subtab="analytics" onclick="switchReportsSubTab('analytics')" type="button">
+            <i class="fas fa-chart-pie" aria-hidden="true"></i> Analytics
+          </button>
+          <button class="reports-subtab" data-subtab="cashbook" onclick="switchReportsSubTab('cashbook')" type="button">
+            <i class="fas fa-book-open" aria-hidden="true"></i> Fund Cashbook
+          </button>
+          <button class="reports-subtab" data-subtab="reconciliation" onclick="switchReportsSubTab('reconciliation')" type="button">
+            <i class="fas fa-balance-scale" aria-hidden="true"></i> Reconciliation
+          </button>
+          <button class="reports-subtab" data-subtab="backup" onclick="switchReportsSubTab('backup')" type="button">
+            <i class="fas fa-database" aria-hidden="true"></i> Backup & Restore
+          </button>
+          <button class="reports-subtab" data-subtab="audit" onclick="switchReportsSubTab('audit')" type="button">
+            <i class="fas fa-shield-alt" aria-hidden="true"></i> Audit Log
+          </button>
         </div>
 
-        <!-- Tabular Alternative for Analytics (Accessibility) -->
-        <div class="section-label" style="margin-top: 28px;">
-          <span>Performance Breakdown (Tabular Alternative)</span>
-        </div>
-        <div id="analyticsTableContainer" class="analytics-table-wrap"></div>
-
-        <!-- Detailed Filtered Records Table & Report Exports -->
-        <div class="reports-header-bar">
-          <div class="section-label" style="margin: 0;">
-            <span>Filtered Installment Statement</span>
+        <!-- ── SUBTAB 1: ANALYTICS & STATEMENTS ── -->
+        <div id="subtab-analytics" class="reports-subpanel active">
+          <div class="section-label">
+            <span>Analytics & Visualizations</span>
+            <small id="analyticsScopeLabel" class="section-scope-label">Yearly & Status Breakdown</small>
           </div>
-          <div class="reports-export-btns">
-            <button class="btn-export" onclick="exportToCSV()" title="Export current filtered view to CSV">
-              <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
+          <div class="charts">
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3>
+                  <span class="dot" style="background: var(--accent)" aria-hidden="true"></span>
+                  Collection Breakdown
+                </h3>
+                <span class="chart-scope-sub" id="chartBreakdownScope">Filtered Scope</span>
+              </div>
+              <div class="chart-canvas-wrap">
+                <canvas id="pieChart"></canvas>
+              </div>
+            </div>
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3>
+                  <span class="dot" style="background: var(--accent2)" aria-hidden="true"></span>
+                  Monthly Performance Trend
+                </h3>
+                <span class="chart-scope-sub" id="chartTrendScope">Allocated Installments vs Collected</span>
+              </div>
+              <div class="chart-canvas-wrap">
+                <canvas id="barChart"></canvas>
+              </div>
+              <div class="chart-caption-hint">
+                * Displays expected, collected, and outstanding amounts allocated to each installment cycle in the selected year.
+              </div>
+            </div>
+          </div>
+
+          <!-- Tabular Alternative for Analytics (Accessibility) -->
+          <div class="section-label" style="margin-top: 28px;">
+            <span>Performance Breakdown (Tabular Alternative)</span>
+          </div>
+          <div id="analyticsTableContainer" class="analytics-table-wrap"></div>
+
+          <!-- Detailed Filtered Records Table & Report Exports -->
+          <div class="reports-header-bar">
+            <div class="section-label" style="margin: 0;">
+              <span>Filtered Installment Statement</span>
+            </div>
+            <div class="reports-export-btns">
+              <button class="btn-export" onclick="exportToCSV()" title="Export current filtered view to CSV">
+                <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
+              </button>
+              <button class="btn-print" onclick="printFilteredReport()" title="Print or save as PDF">
+                <i class="fas fa-print" aria-hidden="true"></i> Print / PDF
+              </button>
+            </div>
+          </div>
+          <div id="tabularReportContainer" class="tabular-report-wrap"></div>
+        </div>
+
+        <!-- ── SUBTAB 2: FUND CASHBOOK ── -->
+        <div id="subtab-cashbook" class="reports-subpanel hidden">
+          <div class="section-label">
+            <span>Fund Balances & Account Ledgers</span>
+            <small class="section-scope-label">Liquid & Invested Funds Tracking</small>
+          </div>
+
+          <!-- Account KPI Cards -->
+          <div class="cashbook-kpi-grid" id="cashbookKpiGrid">
+            <!-- Dynamically populated: Total, Bank, Cash, Mobile Wallets -->
+          </div>
+
+          <!-- Historical Collections Honesty Disclosure -->
+          <div class="cashbook-disclosure-banner">
+            <i class="fas fa-info-circle" aria-hidden="true"></i>
+            <div>
+              <strong>Historical Collections Boundary:</strong> Existing 2026 cycle payment records (totaling ৳51,000 collected) are preserved as verified member contributions under <em>Unassigned Historical Account</em>. To establish reconciled balances, configure an explicit opening balance below.
+            </div>
+          </div>
+
+          <!-- Admin Cashbook Actions -->
+          <div class="cashbook-actions-bar admin-only">
+            <button class="btn-primary" type="button" onclick="openCashbookEntryModal()">
+              <i class="fas fa-plus-circle" aria-hidden="true"></i> Record Entry (Expense / Profit / Inflow)
             </button>
-            <button class="btn-print" onclick="printFilteredReport()" title="Print or save as PDF">
-              <i class="fas fa-print" aria-hidden="true"></i> Print / PDF
+            <button class="btn-secondary" type="button" onclick="openCashbookTransferModal()">
+              <i class="fas fa-exchange-alt" aria-hidden="true"></i> Internal Transfer
+            </button>
+            <button class="btn-secondary" type="button" onclick="openOpeningBalanceModal()">
+              <i class="fas fa-cog" aria-hidden="true"></i> Opening Balances
             </button>
           </div>
-        </div>
-        <div id="tabularReportContainer" class="tabular-report-wrap"></div>
 
-        <!-- 🛡️ Audit History Section -->
-        <div class="section-label" style="margin-top: 36px;">
-          <span>Administrative Audit History</span>
-          <small class="section-scope-label">Logged actions from Shared Admin Session</small>
+          <!-- Cashbook Filters & Table -->
+          <div class="cashbook-table-header">
+            <h4><i class="fas fa-list-ul" aria-hidden="true"></i> Cashbook Movements</h4>
+            <div class="cashbook-filters">
+              <select id="cashbookAccountFilter" onchange="renderCashbookTable()">
+                <option value="all">All Accounts</option>
+                <option value="bank">Bank Account</option>
+                <option value="cash">Cash Drawer</option>
+                <option value="bkash">bKash</option>
+                <option value="nagad">Nagad</option>
+              </select>
+              <select id="cashbookTypeFilter" onchange="renderCashbookTable()">
+                <option value="all">All Types</option>
+                <option value="inflow">Inflows (+)</option>
+                <option value="outflow">Outflows (-)</option>
+                <option value="transfer">Internal Transfers</option>
+              </select>
+            </div>
+          </div>
+          <div id="cashbookTableContainer" class="cashbook-table-wrap"></div>
         </div>
-        <div class="audit-info-notice">
-          <i class="fas fa-info-circle" aria-hidden="true"></i>
-          <span>Administrative payment adjustments, new cycles, and status modifications are recorded below. Session identity is honestly attributed to <strong>Shared Admin Session</strong>.</span>
+
+        <!-- ── SUBTAB 3: MONTHLY RECONCILIATION ── -->
+        <div id="subtab-reconciliation" class="reports-subpanel hidden">
+          <div class="section-label">
+            <span>Monthly Close & Account Reconciliation</span>
+            <small class="section-scope-label">Period Locks & Audit Snapshots</small>
+          </div>
+
+          <div class="rec-shell-card">
+            <div class="rec-header-row">
+              <div class="rec-cycle-picker">
+                <label for="recCycleSelect"><i class="fas fa-calendar-alt"></i> Select Cycle:</label>
+                <select id="recCycleSelect" onchange="updateReconciliationView()"></select>
+              </div>
+              <div id="recCycleStatusBadge" class="rec-status-pill open">
+                <i class="fas fa-lock-open"></i> Period Open
+              </div>
+            </div>
+
+            <!-- Transparency notice -->
+            <div class="rec-notice-box">
+              <i class="fas fa-shield-alt"></i>
+              <span><strong>Backend Lock Disclosure:</strong> Period lock protects cycle against frontend payment additions, reversals, and edits. Enforced client-side; backend security rules recommended for multi-user server enforcement.</span>
+            </div>
+
+            <!-- Comparison Form -->
+            <div id="recFormContainer">
+              <!-- Dynamically populated comparison table & inputs -->
+            </div>
+          </div>
+
+          <!-- Snapshot History -->
+          <div class="section-label" style="margin-top: 28px;">
+            <span>Reconciliation Snapshots History</span>
+          </div>
+          <div id="recHistoryContainer" class="rec-history-wrap"></div>
         </div>
-        <div id="auditLogContainer" class="audit-log-wrap"></div>
+
+        <!-- ── SUBTAB 4: BACKUP & RESTORE ── -->
+        <div id="subtab-backup" class="reports-subpanel hidden">
+          <div class="section-label">
+            <span>System Backup & Safe Restore</span>
+            <small class="section-scope-label">Versioned JSON (v2.0) Data Portability</small>
+          </div>
+
+          <div class="backup-grid">
+            <div class="backup-card">
+              <div class="backup-card-header">
+                <i class="fas fa-file-export" style="color:var(--accent-teal);" aria-hidden="true"></i>
+                <div>
+                  <h4>Export Complete Backup</h4>
+                  <p>Download full snapshot of payments, cycles, cashbook, credit ledgers, and audit history.</p>
+                </div>
+              </div>
+              <div class="backup-meta-note">
+                <i class="fas fa-info-circle"></i>
+                <span>File attachments and cloud receipts are preserved by URI/reference. Binary media is not embedded in JSON.</span>
+              </div>
+              <button class="btn-primary" type="button" onclick="exportFullSystemBackup()" style="width: 100%; justify-content: center; margin-top: 14px;">
+                <i class="fas fa-download"></i> Download JSON Backup (v2.0)
+              </button>
+            </div>
+
+            <div class="backup-card admin-only">
+              <div class="backup-card-header">
+                <i class="fas fa-file-import" style="color:var(--indigo);" aria-hidden="true"></i>
+                <div>
+                  <h4>Restore from Backup</h4>
+                  <p>Validate schema, preview differences, and restore without silent overwrites.</p>
+                </div>
+              </div>
+              <div class="backup-meta-note">
+                <i class="fas fa-shield-alt"></i>
+                <span>Requires Admin passcode. Performs dry-run validation and saves an automatic pre-restore safety snapshot.</span>
+              </div>
+              <div class="restore-picker-wrap" style="margin-top: 14px;">
+                <input type="file" id="backupFileInput" accept=".json" onchange="handleBackupFileSelect(event)" style="display:none;" />
+                <button class="btn-secondary" type="button" onclick="document.getElementById('backupFileInput').click()" style="width: 100%; justify-content: center;">
+                  <i class="fas fa-folder-open"></i> Select Backup File (.json)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── SUBTAB 5: AUDIT LOG ── -->
+        <div id="subtab-audit" class="reports-subpanel hidden">
+          <div class="section-label">
+            <span>Administrative Audit History</span>
+            <small class="section-scope-label">Logged actions with full BD time timestamps</small>
+          </div>
+          <div class="audit-info-notice">
+            <i class="fas fa-info-circle" aria-hidden="true"></i>
+            <span>All administrative actions, reversals, credit allocations, and cycle adjustments are timestamped in <strong>Asia/Dhaka (BD time)</strong>. Actor identity is recorded honestly.</span>
+          </div>
+          <div id="auditLogContainer" class="audit-log-wrap"></div>
+        </div>
       </section>
 
       <!-- ═════════ SECTION 4: SAVINGS CALCULATOR ═════════ -->
@@ -496,20 +695,19 @@
           <span>Mudaraba Savings & Investment Calculators</span>
         </div>
 
-        <!-- Disclaimers & Banking Context Notice -->
+        <!-- Disclaimers & Neutral Calculation Methodology Notice -->
         <div class="calc-disclaimer-box">
-          <div class="calc-disc-title"><i class="fas fa-balance-scale" aria-hidden="true"></i> Islamic Banking & Calculation Methodology</div>
-          <p>
-            Calculations are projected estimates based on standard Islamic banking profit-sharing principles (Mudaraba).
-            Installments are assumed to be deposited at the beginning of each monthly cycle and compounded monthly.
+          <div class="calc-disc-title"><i class="fas fa-balance-scale" aria-hidden="true"></i> Calculation Methodology & Disclosures</div>
+          <p id="calcDynamicSummary">
+            Calculations are projected estimates based on standard financial compounding formulas. All rates are explicitly editable estimates.
           </p>
           <div class="calc-disc-tax-note">
-            <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
-            <strong>Tax & Duty Notice:</strong> Projected values are <em>gross returns</em>. In accordance with Bangladesh Bank and NBR regulations, Govt. withholding tax (10% with TIN, 15% without TIN) and applicable bank excise duties will be deducted upon maturity.
+            <i class="fas fa-info-circle" aria-hidden="true"></i>
+            <strong>Neutral Tax & Fee Notice:</strong> All projected calculations represent gross estimates and explicitly exclude applicable government taxes, withholding, excise duties, and bank account fees.
           </div>
           <div class="calc-disc-rate-note">
             <i class="fas fa-percent" aria-hidden="true"></i>
-            <strong>Profit Rates:</strong> Rates shown are <em>editable example rates</em> reflecting typical Islamic banking trends (approx. 7.5%–9.0%). Rates are not guaranteed and fluctuate based on investment pool performance.
+            <strong>Editable Rates:</strong> Benchmark rates are editable estimates. Actual returns depend on final bank or fund profit declaration.
           </div>
         </div>
 
@@ -565,7 +763,7 @@
                 />
                 <span class="calc-sfx">%</span>
               </div>
-              <div class="calc-hint">Islami Bank FDR ≈ 7–8.5%</div>
+              <div class="calc-hint">Editable estimated profit rate</div>
             </div>
 
             <div class="calc-field">
@@ -607,14 +805,15 @@
                 class="calc-select"
                 onchange="calcFDR()"
               >
-                <option value="1">Annually</option>
-                <option value="2">Half-Yearly</option>
-                <option value="4">Quarterly</option>
-                <option value="12" selected>Monthly</option>
+                <option value="1">Annually (1x/yr)</option>
+                <option value="2">Half-Yearly (2x/yr)</option>
+                <option value="4">Quarterly (4x/yr)</option>
+                <option value="12" selected>Monthly (12x/yr)</option>
               </select>
             </div>
           </div>
           <div class="calc-result-strip" id="fdr-result"></div>
+          <div id="fdr-formula-note" class="calc-formula-note"></div>
         </div>
 
         <!-- ── DPS Panel ── -->
@@ -671,7 +870,15 @@
                   />
                   <span class="calc-sfx">%</span>
                 </div>
-                <div class="calc-hint">Islami Bank DPS ≈ 8–9%</div>
+                <div class="calc-hint">Editable estimated profit rate</div>
+              </div>
+
+              <div class="calc-field">
+                <label class="calc-label">Deposit Timing</label>
+                <select id="dps-timing" class="calc-select" onchange="calcDPS()">
+                  <option value="begin" selected>Beginning of Month (Annuity Due)</option>
+                  <option value="end">End of Month (Ordinary Annuity)</option>
+                </select>
               </div>
 
               <div class="calc-field">
@@ -692,6 +899,7 @@
               </div>
             </div>
             <div class="calc-result-strip" id="dps-result"></div>
+            <div id="dps-formula-note" class="calc-formula-note"></div>
           </div>
 
           <!-- Kisti DPS -->
@@ -853,12 +1061,13 @@
             </div>
           </div>
           <div class="form-group">
-            <label for="newMonthDueDate">Cycle Due Date (Asia/Dhaka)</label>
+            <label for="newMonthDueDate">Cycle Due Date (Asia/Dhaka) <span style="color:var(--rose);">*</span></label>
             <input
               type="date"
               id="newMonthDueDate"
+              required
             />
-            <small style="color: var(--text-3); font-size: 11px;">Default is 15th of the month. Sets the overdue boundary in Asia/Dhaka time.</small>
+            <small style="color: var(--text-3); font-size: 11px;">Mandatory cycle due date in Asia/Dhaka time. Defines overdue threshold.</small>
           </div>
           <div class="form-group">
             <label for="newMonthAmount">Default Amount per Member (৳)</label>
@@ -1029,6 +1238,15 @@
             </div>
           </div>
 
+          <!-- PWA Install Shortcut -->
+          <div class="menu-item-group" id="mobileMenuPwaGroup">
+            <div class="menu-item-label">App Installation</div>
+            <button class="menu-action-btn" type="button" onclick="triggerPwaInstall()">
+              <i class="fas fa-download" style="color:var(--accent-teal);" aria-hidden="true"></i>
+              <span id="mobileMenuPwaText">Install App on Device</span>
+            </button>
+          </div>
+
           <!-- Sync & System Info -->
           <div class="menu-item-group">
             <div class="menu-item-label">Database & Sync Info</div>
@@ -1049,6 +1267,320 @@
             <button id="mobileMenuRetryBtn" class="btn-db-retry hidden" type="button" onclick="retryDbConnection(); closeMobileMenu();" style="margin-top: 6px;">
               <i class="fas fa-redo-alt" aria-hidden="true"></i> Retry Connection
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 🧾 1. Payment Receipt Modal (Printable / PDF) -->
+    <div id="receiptModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="receiptModalTitle">
+      <div class="modal-content receipt-modal-content">
+        <div class="modal-header no-print">
+          <h3 id="receiptModalTitle"><i class="fas fa-receipt" aria-hidden="true"></i> Payment Receipt</h3>
+          <button class="modal-close" onclick="closeReceiptModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="receipt-print-container" id="receiptPrintContainer">
+          <!-- Dynamically populated printable receipt slip -->
+        </div>
+        <div class="receipt-modal-actions no-print">
+          <button class="btn-print" type="button" onclick="printReceipt()"><i class="fas fa-print"></i> Print / Save PDF</button>
+          <button class="btn-secondary" type="button" onclick="closeReceiptModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 📩 2. Prepare Reminder Draft Modal -->
+    <div id="reminderModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reminderModalTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="reminderModalTitle"><i class="fas fa-paper-plane" aria-hidden="true"></i> Prepare Reminder Draft</h3>
+          <button class="modal-close" onclick="closeReminderModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="reminder-meta-pill" id="reminderMetaPill"></div>
+          <div class="reminder-lang-tabs">
+            <button type="button" class="reminder-tab active" data-lang="bn" onclick="switchReminderLang('bn')">বাংলা (Bangla)</button>
+            <button type="button" class="reminder-tab" data-lang="en" onclick="switchReminderLang('en')">English</button>
+          </div>
+          <div class="form-group" style="margin-top: 10px;">
+            <label for="reminderTextarea">Customizable Reminder Message</label>
+            <textarea id="reminderTextarea" class="modern-input" style="height: 140px; resize: vertical; line-height: 1.5;"></textarea>
+          </div>
+          <div class="reminder-actions-row">
+            <button class="btn-primary" type="button" onclick="copyReminderDraft()"><i class="fas fa-copy"></i> Copy Draft</button>
+            <button class="btn-secondary" id="btnShareReminder" type="button" onclick="shareReminderDraft()"><i class="fas fa-share-alt"></i> Share (Device)</button>
+          </div>
+          <small style="color:var(--text-3); font-size:11px; display:block; margin-top:8px;">
+            * Zero automated SMS/WhatsApp messages. Generates verified drafts only for user-initiated copying or device sharing.
+          </small>
+        </div>
+      </div>
+    </div>
+
+    <!-- 🚫 3. Reverse / Void Payment Modal (Reason Required) -->
+    <div id="voidPaymentModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="voidModalTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="voidModalTitle" style="color:var(--rose);"><i class="fas fa-undo-alt" aria-hidden="true"></i> Reverse / Void Payment</h3>
+          <button class="modal-close" onclick="closeVoidPaymentModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="voidPaymentForm" class="modal-form modern-form" onsubmit="handleVoidPaymentSubmit(event)">
+          <div id="voidTxSummaryCard" class="void-tx-summary"></div>
+          <div class="form-group modern-field">
+            <label>Reversal Type</label>
+            <div class="void-type-options">
+              <label class="void-radio-option">
+                <input type="radio" name="voidTypeChoice" value="correction" checked onchange="updateVoidTypeUI()" />
+                <div>
+                  <strong>Error Correction (Mistake)</strong>
+                  <small>Entry mistake or duplicate entry. No physical cash returned to member.</small>
+                </div>
+              </label>
+              <label class="void-radio-option">
+                <input type="radio" name="voidTypeChoice" value="refund" onchange="updateVoidTypeUI()" />
+                <div>
+                  <strong>Actual Cash Refund</strong>
+                  <small>Money was physically refunded to member. Deducts from cashbook account.</small>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="form-group modern-field hidden" id="voidAccountGroup">
+            <label for="voidAccountSelect"><i class="fas fa-wallet"></i> Refund From Account</label>
+            <select id="voidAccountSelect" class="modern-input modern-select">
+              <option value="bank">Bank Account (Islami Bank)</option>
+              <option value="cash">Cash Drawer</option>
+              <option value="bkash">bKash</option>
+              <option value="nagad">Nagad</option>
+            </select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="voidReasonInput"><i class="fas fa-comment"></i> Reversal Reason <span style="color:var(--rose);">*</span></label>
+            <textarea id="voidReasonInput" class="modern-input" required placeholder="Mandatory operational justification for reversing this payment..." style="height:76px; resize:none;"></textarea>
+          </div>
+          <div class="void-preview-notice" id="voidPreviewNotice"></div>
+          <button type="submit" class="btn-submit" id="btnConfirmVoid" style="background:var(--rose); color:#fff;">
+            <i class="fas fa-ban"></i> Confirm & Process Reversal
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 💳 4. Allocate Advance Credit Modal -->
+    <div id="allocateCreditModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="allocModalTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="allocModalTitle"><i class="fas fa-coins" aria-hidden="true"></i> Allocate Advance Credit</h3>
+          <button class="modal-close" onclick="closeAllocateCreditModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="allocateCreditForm" class="modal-form modern-form" onsubmit="handleAllocateCreditSubmit(event)">
+          <div id="allocCreditHeaderCard" class="alloc-credit-header"></div>
+          <div class="form-group modern-field">
+            <label for="allocTargetMonthSelect"><i class="fas fa-calendar-alt"></i> Apply to Outstanding Installment</label>
+            <select id="allocTargetMonthSelect" class="modern-input modern-select" required onchange="updateAllocCreditPreview()"></select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="allocAmountInput"><i class="fas fa-money-bill-wave"></i> Amount to Allocate (৳)</label>
+            <div class="input-with-icon">
+              <span class="input-icon-prefix">৳</span>
+              <input type="number" id="allocAmountInput" class="modern-input with-prefix" min="1" step="any" required oninput="updateAllocCreditPreview()" />
+            </div>
+          </div>
+          <div class="alloc-preview-box" id="allocPreviewBox"></div>
+          <button type="submit" class="btn-submit" id="btnConfirmAlloc">
+            <i class="fas fa-check-circle"></i> Confirm Credit Allocation
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 📘 5. Cashbook Entry Modal -->
+    <div id="cashbookEntryModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cbEntryTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="cbEntryTitle"><i class="fas fa-plus-circle" aria-hidden="true"></i> Record Cashbook Movement</h3>
+          <button class="modal-close" onclick="closeCashbookEntryModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="cashbookEntryForm" class="modal-form modern-form" onsubmit="handleCashbookEntrySubmit(event)">
+          <div class="form-group modern-field">
+            <label for="cbEntryType"><i class="fas fa-exchange-alt"></i> Movement Type</label>
+            <select id="cbEntryType" class="modern-input modern-select" onchange="updateCbCategoryOptions()">
+              <option value="inflow">Inflow (+) — Revenue / Collection / Profit</option>
+              <option value="outflow">Outflow (-) — Expense / Bank Charge / Refund</option>
+            </select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryAccount"><i class="fas fa-wallet"></i> Account</label>
+            <select id="cbEntryAccount" class="modern-input modern-select" required>
+              <option value="bank">Bank Account (Islami Bank)</option>
+              <option value="cash">Cash Drawer</option>
+              <option value="bkash">bKash Wallet</option>
+              <option value="nagad">Nagad Wallet</option>
+            </select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryCategory"><i class="fas fa-tag"></i> Category</label>
+            <select id="cbEntryCategory" class="modern-input modern-select" required></select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryAmount"><i class="fas fa-coins"></i> Amount (৳)</label>
+            <div class="input-with-icon">
+              <span class="input-icon-prefix">৳</span>
+              <input type="number" id="cbEntryAmount" class="modern-input with-prefix" min="1" step="any" required placeholder="0.00" />
+            </div>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryDate"><i class="fas fa-calendar-day"></i> Date (Asia/Dhaka)</label>
+            <input type="date" id="cbEntryDate" class="modern-input" required />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryRef"><i class="fas fa-receipt"></i> Reference / Voucher # (Optional)</label>
+            <input type="text" id="cbEntryRef" class="modern-input" placeholder="e.g. VOUCH-012 / BANK-CHG" />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbEntryNotes"><i class="fas fa-comment-alt"></i> Notes / Description</label>
+            <input type="text" id="cbEntryNotes" class="modern-input" placeholder="Purpose or context" />
+          </div>
+          <button type="submit" class="btn-submit" id="btnSaveCbEntry">
+            <i class="fas fa-save"></i> Save Cashbook Movement
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ⇄ 6. Cashbook Internal Transfer Modal -->
+    <div id="cashbookTransferModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cbTransferTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="cbTransferTitle"><i class="fas fa-exchange-alt" aria-hidden="true"></i> Internal Account Transfer</h3>
+          <button class="modal-close" onclick="closeCashbookTransferModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="cashbookTransferForm" class="modal-form modern-form" onsubmit="handleCashbookTransferSubmit(event)">
+          <div class="cashbook-disclosure-banner" style="margin-bottom:12px;">
+            <i class="fas fa-shield-alt"></i>
+            <div>Internal transfers create linked debit & credit legs. Total organization funds remain unchanged.</div>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbTransferFrom"><i class="fas fa-arrow-circle-up"></i> From Source Account</label>
+            <select id="cbTransferFrom" class="modern-input modern-select" required>
+              <option value="bkash">bKash Wallet</option>
+              <option value="nagad">Nagad Wallet</option>
+              <option value="cash">Cash Drawer</option>
+              <option value="bank">Bank Account</option>
+            </select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbTransferTo"><i class="fas fa-arrow-circle-down"></i> To Destination Account</label>
+            <select id="cbTransferTo" class="modern-input modern-select" required>
+              <option value="bank" selected>Bank Account (Islami Bank)</option>
+              <option value="cash">Cash Drawer</option>
+              <option value="bkash">bKash Wallet</option>
+              <option value="nagad">Nagad Wallet</option>
+            </select>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbTransferAmount"><i class="fas fa-coins"></i> Transfer Amount (৳)</label>
+            <div class="input-with-icon">
+              <span class="input-icon-prefix">৳</span>
+              <input type="number" id="cbTransferAmount" class="modern-input with-prefix" min="1" step="any" required placeholder="0.00" />
+            </div>
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbTransferDate"><i class="fas fa-calendar-day"></i> Date (Asia/Dhaka)</label>
+            <input type="date" id="cbTransferDate" class="modern-input" required />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbTransferRef"><i class="fas fa-hashtag"></i> Transfer Reference / TXN ID (Optional)</label>
+            <input type="text" id="cbTransferRef" class="modern-input" placeholder="e.g. TRF-BANK-09" />
+          </div>
+          <button type="submit" class="btn-submit" id="btnSaveCbTransfer">
+            <i class="fas fa-check"></i> Execute Linked Transfer
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ⚙️ 7. Configure Opening Balances Modal -->
+    <div id="cashbookOpeningModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cbOpeningTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="cbOpeningTitle"><i class="fas fa-cog" aria-hidden="true"></i> Configure Opening Balances</h3>
+          <button class="modal-close" onclick="closeOpeningBalanceModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="cashbookOpeningForm" class="modal-form modern-form" onsubmit="handleOpeningBalanceSubmit(event)">
+          <div class="form-group modern-field">
+            <label for="cbOpeningDate"><i class="fas fa-calendar-alt"></i> Effective Date (Reconciliation Boundary)</label>
+            <input type="date" id="cbOpeningDate" class="modern-input" required />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbOpeningBank">Islami Bank Opening Balance (৳)</label>
+            <input type="number" id="cbOpeningBank" class="modern-input" step="any" min="0" value="0" />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbOpeningCash">Cash Drawer Opening Balance (৳)</label>
+            <input type="number" id="cbOpeningCash" class="modern-input" step="any" min="0" value="0" />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbOpeningBkash">bKash Opening Balance (৳)</label>
+            <input type="number" id="cbOpeningBkash" class="modern-input" step="any" min="0" value="0" />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbOpeningNagad">Nagad Opening Balance (৳)</label>
+            <input type="number" id="cbOpeningNagad" class="modern-input" step="any" min="0" value="0" />
+          </div>
+          <div class="form-group modern-field">
+            <label for="cbOpeningNotes">Opening Balance Notes / Audit Reference</label>
+            <input type="text" id="cbOpeningNotes" class="modern-input" placeholder="e.g. Initial verified bank statement balance" />
+          </div>
+          <button type="submit" class="btn-submit" id="btnSaveOpeningBalances">
+            <i class="fas fa-save"></i> Save Verified Opening Balances
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 🔓 8. Reopen Closed Cycle Modal -->
+    <div id="reopenMonthModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reopenTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="reopenTitle" style="color:var(--amber);"><i class="fas fa-lock-open" aria-hidden="true"></i> Reopen Reconciled Cycle</h3>
+          <button class="modal-close" onclick="closeReopenMonthModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="reopenMonthForm" class="modal-form modern-form" onsubmit="handleReopenMonthSubmit(event)">
+          <div class="void-tx-summary" id="reopenCycleSummary"></div>
+          <div class="form-group modern-field">
+            <label for="reopenReasonInput">Reason for Reopening <span style="color:var(--rose);">*</span></label>
+            <textarea id="reopenReasonInput" class="modern-input" required placeholder="Mandatory administrative justification for unlocking this period..." style="height:70px; resize:none;"></textarea>
+          </div>
+          <div class="form-group modern-field">
+            <label for="reopenPasscodeInput">Admin Passcode <span style="color:var(--rose);">*</span></label>
+            <input type="password" id="reopenPasscodeInput" class="modern-input" required placeholder="Enter admin passcode" />
+          </div>
+          <button type="submit" class="btn-submit" style="background:var(--amber); color:#000;">
+            <i class="fas fa-unlock"></i> Unlock Cycle for Corrections
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 📋 9. Dry-Run Restore Preview Modal -->
+    <div id="restorePreviewModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="restorePrevTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="restorePrevTitle"><i class="fas fa-file-invoice" aria-hidden="true"></i> Dry-Run Restore Preview</h3>
+          <button class="modal-close" onclick="closeRestorePreviewModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div id="restorePreviewContent">
+            <!-- Dynamically populated dry run results -->
+          </div>
+          <div class="form-group modern-field" style="margin-top: 14px;">
+            <label for="restorePasscodeInput">Admin Passcode Confirmation <span style="color:var(--rose);">*</span></label>
+            <input type="password" id="restorePasscodeInput" class="modern-input" required placeholder="Confirm admin passcode to apply restore" />
+          </div>
+          <div class="reminder-actions-row" style="margin-top: 14px;">
+            <button class="btn-primary" type="button" id="btnConfirmRestore" onclick="applyRestoreData()"><i class="fas fa-check-circle"></i> Apply Verified Restore</button>
+            <button class="btn-secondary" type="button" onclick="closeRestorePreviewModal()">Cancel</button>
           </div>
         </div>
       </div>

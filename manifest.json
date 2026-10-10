@@ -1,0 +1,20 @@
+{
+  "name": "KC-Kisti Payment Tracker",
+  "short_name": "KC-Kisti",
+  "description": "Smart Fintech Installment & Fund Management Tracker for KC-Kisti",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1320",
+  "theme_color": "#0b1320",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
