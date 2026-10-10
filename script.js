@@ -1346,13 +1346,13 @@ function render(processedMonths, year) {
             <td style="font-variant-numeric:tabular-nums">${fmtBDT(p.expectedAmount)}</td>
             <td style="font-variant-numeric:tabular-nums; color:${p.paidAmount > 0 ? "var(--green)" : "var(--text-3)"};">${fmtBDT(p.paidAmount)}</td>
             <td style="font-variant-numeric:tabular-nums; color:${p.balance > 0 ? "var(--red)" : "var(--text-3)"};">${p.balance > 0 ? fmtBDT(p.balance) : "৳0"}</td>
-            <td>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <div onclick="openPaymentDetailModal(${year}, '${m.month}', '${p.name}')" style="cursor:pointer;" title="View payment details & history">
+            <td class="col-status-actions">
+              <div class="status-actions-wrap">
+                <button type="button" class="btn-status-badge-trigger" onclick="openPaymentDetailModal(${year}, '${m.month}', '${p.name}')" title="Click to view details or update payment">
                   ${statusBadge}
-                </div>
+                </button>
                 ${currentRole === "admin" ? `
-                  <button class="btn-icon" style="padding:3px 7px; font-size:11px;" onclick="togglePaymentStatus('${m.month}', '${p.name}', ${year})" title="Quick Toggle Status" aria-label="Toggle status for ${p.name}">
+                  <button type="button" class="btn-icon btn-quick-toggle" onclick="togglePaymentStatus('${m.month}', '${p.name}', ${year})" title="Quick 1-Click Toggle Status" aria-label="Toggle status for ${p.name}">
                     <i class="fas fa-sync-alt"></i>
                   </button>
                 ` : ""}
@@ -1387,7 +1387,7 @@ function render(processedMonths, year) {
                 <th>Target</th>
                 <th>Paid</th>
                 <th>Remaining</th>
-                <th>Status & Actions</th>
+                <th class="col-status-actions">Status & Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1442,21 +1442,23 @@ async function togglePaymentStatus(month, name, year) {
   if (payment.paid) {
     payment.paidAmount = payment.amount;
     payment.balance = 0;
-    payment.paymentsList = payment.paymentsList || [];
-    payment.paymentsList.push({
-      id: "pmt_" + Date.now(),
-      amount: payment.amount,
-      date: getDhakaDateString(),
-      method: "Quick Status Toggle",
-      reference: "AUTO-TOGGLE",
-      receiptRef: "",
-      verified: true,
-      verifiedBy: "Shared Admin Session",
-      notes: "Quick toggle marked as Paid",
-    });
+    payment.paymentsList = [
+      {
+        id: "pmt_" + Date.now(),
+        amount: payment.amount,
+        date: getDhakaDateString(),
+        method: "Quick Status Toggle",
+        reference: "AUTO-TOGGLE",
+        receiptRef: "",
+        verified: true,
+        verifiedBy: "Shared Admin Session",
+        notes: "Quick toggle marked as Paid",
+      },
+    ];
   } else {
     payment.paidAmount = 0;
     payment.balance = payment.amount;
+    payment.paymentsList = [];
   }
 
   await logAuditAction(
@@ -1729,99 +1731,196 @@ function openPaymentDetailModal(year, monthName, memberName) {
 
   let statusBadge = "";
   if (p.status === "paid" || p.status === "overpaid") {
-    statusBadge = `<span class="badge-paid">Paid in Full ✅</span>`;
+    statusBadge = `<span class="badge-paid"><i class="fas fa-check-circle"></i> Paid in Full</span>`;
   } else if (p.status === "partially_paid") {
-    statusBadge = `<span class="badge-partial">Partially Paid ⚠️</span>`;
+    statusBadge = `<span class="badge-partial"><i class="fas fa-adjust"></i> Partial (${fmtBDT(p.paidAmount)})</span>`;
   } else if (p.status === "overdue") {
-    statusBadge = `<span class="badge-overdue">Overdue (${p.daysOverdue} days) 🚨</span>`;
+    statusBadge = `<span class="badge-overdue"><i class="fas fa-exclamation-circle"></i> Overdue (${p.daysOverdue}d)</span>`;
   } else {
-    statusBadge = `<span class="badge-due">Pending ⏳</span>`;
+    statusBadge = `<span class="badge-due"><i class="fas fa-clock"></i> Pending</span>`;
   }
 
-  // Transaction history table
-  let historyRows = "";
+  const pct = p.expectedAmount > 0 ? Math.min(100, Math.round((p.paidAmount / p.expectedAmount) * 100)) : (p.paid ? 100 : 0);
+  const progressColor = (p.status === "paid" || p.status === "overpaid") ? "var(--green)" : (p.status === "partially_paid" ? "var(--amber)" : "var(--indigo)");
+
+  // 1. Transaction History Cards
+  let historyCards = "";
   if (pmtList.length > 0) {
-    historyRows = pmtList
+    historyCards = pmtList
       .map(
-        (t, idx) => `
-      <tr>
-        <td>#${idx + 1}</td>
-        <td>${t.date || "Not recorded"}</td>
-        <td style="color:var(--green); font-weight:700;">${fmtBDT(t.amount)}</td>
-        <td>${t.method || "Not recorded"}</td>
-        <td>${t.reference || "Not recorded"}</td>
-        <td>${t.receiptRef || "Not recorded"}</td>
-        <td>${t.verified ? `<span style="color:var(--green);">Verified ✅</span> (${t.verifiedBy || "Admin"})` : '<span style="color:var(--text-3);">Unverified</span>'}</td>
-        <td>${t.notes || "—"}</td>
-      </tr>
+        (t) => `
+      <div class="pmt-tx-card">
+        <div class="pmt-tx-card-top">
+          <div class="pmt-tx-amount">+${fmtBDT(t.amount)}</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="pmt-tx-date"><i class="fas fa-calendar-alt" aria-hidden="true"></i> ${t.date || "Not recorded"}</div>
+            ${currentRole === "admin" ? `
+              <button type="button" class="pmt-tx-delete-btn" onclick="deletePaymentEntry(${year}, '${monthName}', '${memberName}', '${t.id}')" title="Delete this payment transaction" aria-label="Delete transaction">
+                <i class="fas fa-trash-alt"></i>
+              </button>
+            ` : ""}
+          </div>
+        </div>
+        <div class="pmt-tx-meta-row">
+          <span class="pmt-meta-pill"><i class="fas fa-money-bill-wave" aria-hidden="true"></i> ${t.method || "Direct"}</span>
+          ${t.reference && t.reference !== "N/A" ? `<span class="pmt-meta-pill"><i class="fas fa-receipt" aria-hidden="true"></i> ${t.reference}</span>` : ""}
+          <span class="pmt-meta-pill ${t.verified ? "verified" : "unverified"}">
+            <i class="fas ${t.verified ? "fa-shield-alt" : "fa-clock"}" aria-hidden="true"></i> ${t.verified ? (t.verifiedBy || "Verified") : "Unverified"}
+          </span>
+        </div>
+        ${t.notes ? `<div class="pmt-tx-notes"><i class="fas fa-comment-dots" aria-hidden="true"></i> ${t.notes}</div>` : ""}
+      </div>
     `,
       )
       .join("");
   } else if (p.paid) {
-    historyRows = `
-      <tr>
-        <td>#1</td>
-        <td>Legacy Record</td>
-        <td style="color:var(--green); font-weight:700;">${fmtBDT(p.expectedAmount)}</td>
-        <td>Not recorded</td>
-        <td>Not recorded</td>
-        <td>Not recorded</td>
-        <td>Verified by Baseline</td>
-        <td>Legacy full installment record</td>
-      </tr>
+    historyCards = `
+      <div class="pmt-tx-card legacy">
+        <div class="pmt-tx-card-top">
+          <div class="pmt-tx-amount">+${fmtBDT(p.expectedAmount)}</div>
+          <div class="pmt-tx-date"><i class="fas fa-check-double" aria-hidden="true"></i> Baseline Record</div>
+        </div>
+        <div class="pmt-tx-meta-row">
+          <span class="pmt-meta-pill verified"><i class="fas fa-shield-alt" aria-hidden="true"></i> Verified Baseline</span>
+          <span class="pmt-meta-pill"><i class="fas fa-check" aria-hidden="true"></i> Full Installment</span>
+        </div>
+      </div>
     `;
   } else {
-    historyRows = `<tr><td colspan="8" style="text-align:center; color:var(--text-3); padding:16px;">No payments recorded yet for this installment.</td></tr>`;
+    historyCards = `
+      <div class="pmt-empty-tx">
+        <i class="fas fa-hourglass-start" aria-hidden="true"></i>
+        <span>No payment transactions recorded yet for this installment.</span>
+      </div>
+    `;
   }
 
-  // Admin Partial Payment Form
+  // 2. Admin 1-Click Quick Action Bar
+  let adminQuickToggleBar = "";
+  if (currentRole === "admin") {
+    if (p.paid) {
+      adminQuickToggleBar = `
+        <div class="pmt-quick-actions-bar">
+          <button type="button" class="btn-pmt-quick-toggle is-revert" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
+            <i class="fas fa-undo-alt" aria-hidden="true"></i> Revert Status to Pending (Unpaid)
+          </button>
+        </div>
+      `;
+    } else {
+      adminQuickToggleBar = `
+        <div class="pmt-quick-actions-bar">
+          <button type="button" class="btn-pmt-quick-toggle is-pay" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
+            <i class="fas fa-check-circle" aria-hidden="true"></i> Quick Action: Mark as Paid in Full (${fmtBDT(p.expectedAmount)})
+          </button>
+        </div>
+      `;
+    }
+  }
+
+  // 3. Admin Partial / Custom Payment Form
   let adminRecordForm = "";
   if (currentRole === "admin") {
-    const defaultPayAmount = Math.max(0, p.balance) || 1000;
+    const defaultPayAmount = Math.max(0, p.balance) || p.expectedAmount || 1000;
     adminRecordForm = `
-      <div class="pmt-record-form">
-        <h4><i class="fas fa-plus-circle"></i> Record Payment / Partial Payment</h4>
-        <form id="recordPaymentForm" onsubmit="handleRecordPaymentSubmit(event, ${year}, '${monthName}', '${memberName}')">
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
-            <div class="form-group">
-              <label for="partialAmountInput">Amount to Pay (৳)</label>
-              <input type="number" id="partialAmountInput" value="${defaultPayAmount}" min="1" step="10" required />
+      <div class="pmt-admin-form-card">
+        <div class="pmt-admin-form-header">
+          <h4><i class="fas fa-plus-circle" aria-hidden="true"></i> Record Partial / Custom Payment</h4>
+          <span class="pmt-admin-badge"><i class="fas fa-user-shield" aria-hidden="true"></i> Admin Action</span>
+        </div>
+
+        <div class="pmt-preset-chips-wrap">
+          <span class="pmt-preset-label"><i class="fas fa-bolt" aria-hidden="true"></i> Quick Amount:</span>
+          ${p.balance > 0 ? `<button type="button" class="pmt-preset-chip" onclick="setPartialAmount(${p.balance})"><span class="chip-val">${fmtBDT(p.balance)}</span> <span class="chip-desc">Remaining</span></button>` : ""}
+          <button type="button" class="pmt-preset-chip" onclick="setPartialAmount(${p.expectedAmount})"><span class="chip-val">${fmtBDT(p.expectedAmount)}</span> <span class="chip-desc">Full</span></button>
+          <button type="button" class="pmt-preset-chip" onclick="setPartialAmount(500)"><span class="chip-val">৳500</span></button>
+        </div>
+
+        <form id="recordPaymentForm" class="modal-form modern-form" onsubmit="handleRecordPaymentSubmit(event, ${year}, '${monthName}', '${memberName}')">
+          <div class="pmt-form-grid">
+            <div class="form-group modern-field">
+              <label for="partialAmountInput">
+                <i class="fas fa-coins" aria-hidden="true"></i> Amount to Pay
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix">৳</span>
+                <input type="number" id="partialAmountInput" class="modern-input with-prefix" value="${defaultPayAmount}" min="1" step="any" required placeholder="0.00" />
+              </div>
             </div>
-            <div class="form-group">
-              <label for="partialDateInput">Payment Date</label>
-              <input type="date" id="partialDateInput" value="${getDhakaDateString()}" required />
-            </div>
-            <div class="form-group">
-              <label for="partialMethodInput">Method</label>
-              <select id="partialMethodInput">
-                <option value="Bank Transfer">Bank Transfer (IBBL)</option>
-                <option value="bKash">bKash</option>
-                <option value="Nagad">Nagad</option>
-                <option value="Cash">Cash</option>
-                <option value="Rocket">Rocket</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="partialRefInput">Transaction / Ref #</label>
-              <input type="text" id="partialRefInput" placeholder="e.g. TXN12345" />
-            </div>
-          </div>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:8px;">
-            <div class="form-group">
-              <label for="partialReceiptInput">Receipt ID / Memo Ref</label>
-              <input type="text" id="partialReceiptInput" placeholder="e.g. REC-2026-09" />
-            </div>
-            <div class="form-group">
-              <label for="partialNotesInput">Notes / Comment</label>
-              <input type="text" id="partialNotesInput" placeholder="Optional notes" />
+            <div class="form-group modern-field">
+              <label for="partialDateInput">
+                <i class="fas fa-calendar-day" aria-hidden="true"></i> Payment Date
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix"><i class="fas fa-calendar-alt" aria-hidden="true"></i></span>
+                <input type="date" id="partialDateInput" class="modern-input with-prefix" value="${getDhakaDateString()}" required />
+              </div>
             </div>
           </div>
-          <div class="form-group checkbox" style="margin: 10px 0;">
-            <label><input type="checkbox" id="partialVerifyCheck" checked /> Mark as Verified (Verified by Shared Admin Session)</label>
+
+          <div class="pmt-form-grid">
+            <div class="form-group modern-field">
+              <label for="partialMethodInput">
+                <i class="fas fa-wallet" aria-hidden="true"></i> Payment Method
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix"><i class="fas fa-credit-card" aria-hidden="true"></i></span>
+                <select id="partialMethodInput" class="modern-input modern-select with-prefix">
+                  <option value="Bank Transfer">Bank Transfer (IBBL)</option>
+                  <option value="bKash">bKash</option>
+                  <option value="Nagad">Nagad</option>
+                  <option value="Cash">Cash</option>
+                  <option value="Rocket">Rocket</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group modern-field">
+              <label for="partialRefInput">
+                <i class="fas fa-hashtag" aria-hidden="true"></i> Transaction / Ref #
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix"><i class="fas fa-receipt" aria-hidden="true"></i></span>
+                <input type="text" id="partialRefInput" class="modern-input with-prefix" placeholder="e.g. TXN12345 (Optional)" />
+              </div>
+            </div>
           </div>
-          <button type="submit" class="btn-submit" id="btnSubmitPayment">
-            <i class="fas fa-save"></i> Save Payment Record
+
+          <div class="pmt-form-grid">
+            <div class="form-group modern-field">
+              <label for="partialReceiptInput">
+                <i class="fas fa-file-invoice" aria-hidden="true"></i> Memo / Doc Ref
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix"><i class="fas fa-link" aria-hidden="true"></i></span>
+                <input type="text" id="partialReceiptInput" class="modern-input with-prefix" placeholder="e.g. REC-2026-09 (Optional)" />
+              </div>
+            </div>
+            <div class="form-group modern-field">
+              <label for="partialNotesInput">
+                <i class="fas fa-comment-alt" aria-hidden="true"></i> Notes / Remarks
+              </label>
+              <div class="input-with-icon">
+                <span class="input-icon-prefix"><i class="fas fa-pen" aria-hidden="true"></i></span>
+                <input type="text" id="partialNotesInput" class="modern-input with-prefix" placeholder="Optional notes" />
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group modern-checkbox-group">
+            <label class="modern-checkbox-label">
+              <input type="checkbox" id="partialVerifyCheck" checked />
+              <span class="modern-checkbox-custom">
+                <i class="fas fa-check" aria-hidden="true"></i>
+              </span>
+              <span class="checkbox-text">
+                <strong>Mark as Verified</strong>
+                <small>Record will show as verified by shared admin session</small>
+              </span>
+            </label>
+          </div>
+
+          <button type="submit" class="btn-submit btn-save-payment modern-btn-submit" id="btnSubmitPayment">
+            <i class="fas fa-save" aria-hidden="true"></i> Save Payment Record
           </button>
         </form>
       </div>
@@ -1829,61 +1928,124 @@ function openPaymentDetailModal(year, monthName, memberName) {
   }
 
   body.innerHTML = `
-    <div class="pmt-kpis-grid">
-      <div class="pmt-kpi-card">
-        <span class="kpi-label">Member & Cycle</span>
-        <span class="kpi-val" style="font-size:15px;">${memberName}</span>
-        <span class="stat-sub">${monthName} ${year}</span>
+    <!-- Hero Summary Card -->
+    <div class="pmt-hero-card">
+      <div class="pmt-hero-top">
+        <div class="pmt-hero-user">
+          <div class="pmt-avatar">${memberName.charAt(0).toUpperCase()}</div>
+          <div>
+            <div class="pmt-member-name">${memberName}</div>
+            <div class="pmt-cycle-sub"><i class="fas fa-calendar-alt" aria-hidden="true"></i> ${monthName} ${year} ${monthData.dueDate ? `· <span class="pmt-due-tag">Due: ${monthData.dueDate}</span>` : ""}</div>
+          </div>
+        </div>
+        <div class="pmt-hero-badge-wrap">
+          ${statusBadge}
+        </div>
       </div>
-      <div class="pmt-kpi-card">
-        <span class="kpi-label">Expected Installment</span>
-        <span class="kpi-val">${fmtBDT(p.expectedAmount)}</span>
-        <span class="stat-sub">${monthData.dueDate ? `Due: ${monthData.dueDate}` : "Due date not set"}</span>
+
+      <div class="pmt-progress-wrap">
+        <div class="pmt-progress-info">
+          <span>Installment Paid Progress</span>
+          <strong>${pct}%</strong>
+        </div>
+        <div class="pmt-progress-track">
+          <div class="pmt-progress-fill" style="width: ${pct}%; background: ${progressColor}"></div>
+        </div>
       </div>
-      <div class="pmt-kpi-card">
-        <span class="kpi-label">Paid So Far</span>
-        <span class="kpi-val is-paid">${fmtBDT(p.paidAmount)}</span>
-        <span class="stat-sub">${pmtList.length} transaction${pmtList.length !== 1 ? "s" : ""}</span>
-      </div>
-      <div class="pmt-kpi-card">
-        <span class="kpi-label">Remaining Balance</span>
-        <span class="kpi-val ${p.balance > 0 ? (p.status === "overdue" ? "is-overdue" : "is-due") : "is-paid"}">${fmtBDT(Math.max(0, p.balance))}</span>
-        <span class="stat-sub">${p.balance < 0 ? `Overpaid by ${fmtBDT(Math.abs(p.balance))}` : p.status === "overdue" ? `🚨 ${p.daysOverdue}d Overdue` : statusBadge}</span>
+
+      <div class="pmt-stats-strip">
+        <div class="pmt-stat-col">
+          <span class="pmt-stat-label">Expected</span>
+          <span class="pmt-stat-val">${fmtBDT(p.expectedAmount)}</span>
+        </div>
+        <div class="pmt-stat-col">
+          <span class="pmt-stat-label">Paid So Far</span>
+          <span class="pmt-stat-val is-paid">${fmtBDT(p.paidAmount)}</span>
+        </div>
+        <div class="pmt-stat-col">
+          <span class="pmt-stat-label">Remaining</span>
+          <span class="pmt-stat-val ${p.balance > 0 ? (p.status === 'overdue' ? 'is-overdue' : 'is-due') : 'is-paid'}">${p.balance > 0 ? fmtBDT(p.balance) : (p.balance < 0 ? `+${fmtBDT(Math.abs(p.balance))}` : '৳0')}</span>
+        </div>
       </div>
     </div>
 
+    <!-- Quick Admin Action Bar -->
+    ${adminQuickToggleBar}
+
+    <!-- Payment History Cards -->
     <div class="pmt-history-section">
-      <h4><i class="fas fa-history"></i> Payment History & Audit Records</h4>
-      <div class="tabular-report-wrap" style="margin-bottom:0;">
-        <table class="pmt-history-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Date</th>
-              <th>Amount</th>
-              <th>Method</th>
-              <th>Reference #</th>
-              <th>Receipt</th>
-              <th>Verification</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyRows}
-          </tbody>
-        </table>
+      <div class="pmt-section-header">
+        <h4><i class="fas fa-history" aria-hidden="true"></i> Payment Transactions (${pmtList.length})</h4>
+        <span class="pmt-tx-count-chip">${monthName} ${year}</span>
+      </div>
+      <div class="pmt-tx-list">
+        ${historyCards}
       </div>
     </div>
 
+    <!-- Admin Record Form -->
     ${adminRecordForm}
   `;
 
   modal.classList.remove("hidden");
 }
 
+function setPartialAmount(val) {
+  const input = document.getElementById("partialAmountInput");
+  if (input) {
+    input.value = val;
+    input.focus();
+  }
+}
+
+async function handleModalQuickToggle(year, monthName, memberName) {
+  await togglePaymentStatus(monthName, memberName, year);
+  // Re-open/update modal with refreshed state
+  openPaymentDetailModal(year, monthName, memberName);
+}
+
 function closePaymentDetailModal() {
   const modal = document.getElementById("paymentDetailModal");
   if (modal) modal.classList.add("hidden");
+}
+
+async function deletePaymentEntry(year, monthName, memberName, paymentId) {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+
+  const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
+  const monthData = yearData.months.find((m) => m.month === monthName);
+  if (!monthData) return;
+  const payment = monthData.payments.find((p) => p.name === memberName);
+  if (!payment) return;
+
+  payment.paymentsList = payment.paymentsList || [];
+  const targetIdx = payment.paymentsList.findIndex((item) => item.id === paymentId);
+  if (targetIdx === -1) return;
+
+  const removed = payment.paymentsList.splice(targetIdx, 1)[0];
+
+  // Recalculate
+  const totalPaid = payment.paymentsList.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  payment.paidAmount = totalPaid;
+  payment.balance = payment.amount - totalPaid;
+  payment.paid = totalPaid >= payment.amount;
+
+  await logAuditAction(
+    "DELETE_PAYMENT",
+    `${memberName} · ${monthName} ${year}`,
+    `Deleted payment transaction of ${fmtBDT(removed.amount)}`,
+    `Paid: ${fmtBDT(payment.paidAmount + (Number(removed.amount) || 0))}`,
+    `Paid: ${fmtBDT(totalPaid)} (Balance: ${fmtBDT(payment.balance)})`,
+  );
+
+  await savePaymentDataToStore();
+  showToast(`Payment of ${fmtBDT(removed.amount)} removed! 🗑️`);
+  openPaymentDetailModal(year, monthName, memberName);
+  applyFilters();
 }
 
 async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
@@ -2672,6 +2834,21 @@ async function handleAddPayment(e) {
     existing.paid = paid;
     existing.paidAmount = paid ? amount : 0;
     existing.balance = paid ? 0 : amount;
+    existing.paymentsList = paid
+      ? [
+          {
+            id: "pmt_" + Date.now(),
+            amount: amount,
+            date: getDhakaDateString(),
+            method: "Direct Entry",
+            reference: "DIRECT",
+            receiptRef: "",
+            verified: true,
+            verifiedBy: "Shared Admin Session",
+            notes: "Updated via payment form",
+          },
+        ]
+      : [];
   } else {
     monthData.payments.push({
       name: name,
