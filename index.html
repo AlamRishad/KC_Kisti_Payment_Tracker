@@ -67,19 +67,33 @@
       <!-- Header -->
       <div class="header">
         <div class="header-left">
-          <div class="logo-mark">K</div>
+          <div class="logo-mark" aria-hidden="true">K</div>
           <div>
             <h1>
               Kisti Payment Dashboard <span>Monthly installment tracker</span>
             </h1>
+            <div class="header-sync-info" id="headerSyncInfo">
+              <span id="lastUpdatedMeta"><i class="fas fa-database" aria-hidden="true"></i> Database: Initializing...</span>
+              <span class="sync-dot-sep">·</span>
+              <span id="lastSyncedMeta"><i class="fas fa-clock" aria-hidden="true"></i> Synced: Live</span>
+            </div>
           </div>
           <div
             id="dbStatusBadge"
             class="db-status-badge connecting"
             title="Live Database Status"
           >
-            <span class="db-dot"></span>
+            <span class="db-dot" aria-hidden="true"></span>
             <span id="dbStatusText">Connecting...</span>
+            <button
+              id="dbRetryBtn"
+              class="btn-db-retry hidden"
+              onclick="retryDbConnection()"
+              title="Retry database connection"
+              aria-label="Retry database connection"
+            >
+              <i class="fas fa-redo-alt" aria-hidden="true"></i> Retry
+            </button>
           </div>
         </div>
         <div class="header-actions">
@@ -90,117 +104,414 @@
               class="role-badge member"
               title="Current Access Mode"
             >
-              <i class="fas fa-eye"></i>
+              <i class="fas fa-eye" aria-hidden="true"></i>
               <span id="roleBadgeText">Member (View Only)</span>
             </span>
             <button
               id="authSwitchBtn"
               class="btn-auth-switch"
               onclick="handleAuthSwitchClick()"
+              aria-label="Switch access mode"
             >
-              <i class="fas fa-lock"></i>
+              <i class="fas fa-lock" aria-hidden="true"></i>
               <span id="authSwitchBtnText">Admin Login</span>
             </button>
           </div>
 
           <!-- Theme Toggle -->
-          <button class="btn-icon" id="themeToggle" title="Toggle Theme">
-            <i class="fas fa-moon"></i>
+          <button class="btn-icon" id="themeToggle" title="Toggle Theme" aria-label="Toggle dark/light theme">
+            <i class="fas fa-moon" aria-hidden="true"></i>
           </button>
           <!-- Add Payment -->
           <button
             class="btn-add admin-only"
             onclick="openModal()"
             title="Add / Update Single Payment"
+            aria-label="Add or update payment"
           >
-            <i class="fas fa-plus-circle"></i> Add Payment
+            <i class="fas fa-plus-circle" aria-hidden="true"></i> Add Payment
           </button>
           <!-- Start New Month -->
           <button
             class="btn-new-month admin-only"
             onclick="openNewMonthModal()"
             title="Start New Month / Year with All Members"
+            aria-label="Start new month or year"
           >
-            <i class="fas fa-calendar-plus"></i> New Month
+            <i class="fas fa-calendar-plus" aria-hidden="true"></i> New Month
           </button>
           <!-- Export CSV -->
-          <button class="btn-export" onclick="exportToCSV()">
-            <i class="fas fa-file-csv"></i> Export CSV
+          <button class="btn-export" onclick="exportToCSV()" title="Export filtered records to CSV" aria-label="Export filtered records to CSV">
+            <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
           </button>
-          <!-- Print -->
-          <!-- <button class="btn-print" onclick="window.print()">
-            <i class="fas fa-print"></i> Print
-          </button> -->
+          <!-- Print / PDF -->
+          <button class="btn-print" onclick="printFilteredReport()" title="Print or save as PDF" aria-label="Print or save as PDF">
+            <i class="fas fa-print" aria-hidden="true"></i> Print / PDF
+          </button>
+        </div>
+
+        <!-- 📱 Mobile Menu Trigger Button (<= 768px) -->
+        <button
+          type="button"
+          id="mobileMenuBtn"
+          class="mobile-menu-btn"
+          onclick="openMobileMenu()"
+          title="Open dashboard settings and menu"
+          aria-label="Open dashboard settings and menu"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <i class="fas fa-bars" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <!-- 🧭 Main Navigation Tabs -->
+      <nav class="main-nav-bar" role="tablist" aria-label="Dashboard sections">
+        <button
+          class="nav-tab active"
+          role="tab"
+          id="tab-overview"
+          data-tab="overview"
+          aria-selected="true"
+          aria-controls="sec-overview"
+          onclick="switchNavTab('overview', true)"
+        >
+          <i class="fas fa-th-large" aria-hidden="true"></i> <span>Overview</span>
+        </button>
+        <button
+          class="nav-tab"
+          role="tab"
+          id="tab-members"
+          data-tab="members"
+          aria-selected="false"
+          aria-controls="sec-members"
+          onclick="switchNavTab('members', true)"
+        >
+          <i class="fas fa-users" aria-hidden="true"></i> <span>Members</span>
+        </button>
+        <button
+          class="nav-tab"
+          role="tab"
+          id="tab-reports"
+          data-tab="reports"
+          aria-selected="false"
+          aria-controls="sec-reports"
+          onclick="switchNavTab('reports', true)"
+        >
+          <i class="fas fa-chart-line" aria-hidden="true"></i> <span>Reports</span>
+        </button>
+        <button
+          class="nav-tab"
+          role="tab"
+          id="tab-calculator"
+          data-tab="calculator"
+          aria-selected="false"
+          aria-controls="sec-calculator"
+          onclick="switchNavTab('calculator', true)"
+        >
+          <i class="fas fa-calculator" aria-hidden="true"></i> <span>Calculator</span>
+        </button>
+      </nav>
+
+      <!-- 📱 Mobile Compact Filter Trigger & Summary Bar (<= 768px) -->
+      <div class="mobile-filter-bar" id="mobileFilterBar">
+        <button
+          type="button"
+          id="mobileFilterTriggerBtn"
+          class="btn-mobile-filter-trigger"
+          onclick="openMobileFilterSheet()"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="filterSheetWrapper"
+          aria-label="Open filter controls"
+        >
+          <i class="fas fa-sliders-h" aria-hidden="true"></i>
+          <span>Filters</span>
+          <span id="mobileFilterActiveBadge" class="mobile-filter-badge hidden">0</span>
+        </button>
+        <div class="mobile-filter-summary-chip" id="mobileFilterSummaryChip" onclick="openMobileFilterSheet()" role="button" tabindex="0" aria-label="Current filter scope, tap to edit">
+          <span id="mobileFilterSummaryText">All 2026 · All Months</span>
+        </div>
+        <button
+          type="button"
+          id="mobileFilterResetBtn"
+          class="btn-mobile-filter-reset hidden"
+          onclick="clearAllFilters()"
+          title="Reset all filters"
+          aria-label="Reset all filters"
+        >
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <!-- 🎛️ Shared Controls Bar (Inline on Desktop, Bottom Sheet on Mobile) -->
+      <div id="filterSheetWrapper" class="filter-sheet-wrapper" role="dialog" aria-modal="true" aria-labelledby="filterSheetTitle" aria-hidden="true">
+        <div class="filter-sheet-backdrop" id="filterSheetBackdrop" onclick="closeMobileFilterSheet()"></div>
+        <div class="filter-sheet-panel" id="filterSheetPanel">
+          <div class="filter-sheet-header">
+            <h3 id="filterSheetTitle"><i class="fas fa-sliders-h" aria-hidden="true"></i> Filters</h3>
+            <button class="sheet-close-btn" type="button" onclick="closeMobileFilterSheet()" aria-label="Close filters">&times;</button>
+          </div>
+
+          <div class="controls-bar" id="sharedControlsBar">
+            <div class="filter-group search-group">
+              <label for="searchInput" class="filter-label"><i class="fas fa-search" aria-hidden="true"></i> Search</label>
+              <div class="search-box">
+                <i class="fas fa-search" aria-hidden="true"></i>
+                <input
+                  type="text"
+                  id="searchInput"
+                  placeholder="Search member..."
+                  aria-label="Search members"
+                />
+              </div>
+            </div>
+            <div class="filter-group filter-year-group">
+              <label for="yearFilter" class="filter-label">Year</label>
+              <select id="yearFilter" aria-label="Filter by year"></select>
+            </div>
+            <div class="filter-group filter-month-group">
+              <label for="monthFilter" class="filter-label">Month</label>
+              <select id="monthFilter" aria-label="Filter by month"></select>
+            </div>
+            <div class="filter-group filter-member-group">
+              <label for="nameFilter" class="filter-label">Member</label>
+              <select id="nameFilter" aria-label="Filter by member"></select>
+            </div>
+            <div class="filter-group filter-status-group">
+              <label for="statusFilter" class="filter-label">Status</label>
+              <select id="statusFilter" aria-label="Filter by payment status">
+                <option value="all">All Statuses</option>
+                <option value="paid">Paid ✅</option>
+                <option value="partial">Partially Paid ⚠️</option>
+                <option value="due">Pending ⏳</option>
+                <option value="overdue">Overdue 🚨</option>
+              </select>
+            </div>
+            <div class="filter-group actions-group">
+              <button
+                id="clearFiltersBtn"
+                class="btn-clear-filters"
+                type="button"
+                onclick="clearAllFilters()"
+                title="Reset all filters to default"
+                aria-label="Reset all filters"
+              >
+                <i class="fas fa-undo-alt" aria-hidden="true"></i> Reset
+              </button>
+            </div>
+          </div>
+
+          <div class="filter-sheet-footer">
+            <button type="button" class="btn-sheet-clear" onclick="clearAllFilters()">Clear Filters</button>
+            <button type="button" class="btn-sheet-apply" onclick="applyAndCloseMobileFilters()">Apply Filters</button>
+          </div>
         </div>
       </div>
 
-      <!-- 📊 Stats Cards -->
-      <div class="stats-grid" id="statsGrid">
-        <!-- Dynamically populated -->
-      </div>
-
-      <!-- Filters + Search -->
-      <div class="controls-bar">
-        <div class="search-box">
-          <i class="fas fa-search"></i>
-          <input
-            type="text"
-            id="searchInput"
-            placeholder="Search member name..."
-          />
+      <!-- 🏷️ Filter Scope & Active Criteria Banner -->
+      <div class="scope-banner" id="scopeBanner" role="status" aria-live="polite">
+        <div class="scope-tag">
+          <i class="fas fa-filter" aria-hidden="true"></i>
+          <span>Viewing: <strong id="filterScopeText">All 2026 · All Months · All Members</strong></span>
         </div>
-        <div class="filters">
-          <select id="yearFilter"></select>
-          <select id="monthFilter"></select>
-          <select id="nameFilter"></select>
+        <div class="scope-meta">
+          <span id="matchingMembersBadge" class="matching-badge">Matching Members: 7</span>
         </div>
       </div>
 
-      <!-- 📈 Progress Bar -->
-      <div class="progress-section">
-        <div class="progress-header">
-          <span>Collection Progress</span>
-          <span id="progressText">0%</span>
+      <!-- ═════════ SECTION 1: OVERVIEW ═════════ -->
+      <section id="sec-overview" class="tab-pane active" role="tabpanel" aria-labelledby="tab-overview">
+        <div class="tab-pane-header">
+          <h2><i class="fas fa-th-large" aria-hidden="true"></i> Overview</h2>
         </div>
-        <div class="progress-bar">
-          <div class="progress-fill" id="progressFill"></div>
+
+        <!-- 🏦 Mobile Payment Account Disclosure (Collapsed by default, only on mobile) -->
+        <div class="mobile-bank-disclosure-wrap" id="mobileBankWrap">
+          <details class="mobile-bank-details" id="mobileBankDetails">
+            <summary class="mobile-bank-summary" aria-label="Toggle payment account details">
+              <div class="mobile-bank-summary-left">
+                <span class="mobile-bank-icon-pill"><i class="fas fa-university" aria-hidden="true"></i></span>
+                <span class="mobile-bank-title">Payment Account</span>
+              </div>
+              <div class="mobile-bank-summary-right">
+                <span class="mobile-bank-hint">Islami Bank</span>
+                <i class="fas fa-chevron-down mobile-bank-chevron" aria-hidden="true"></i>
+              </div>
+            </summary>
+            <div class="mobile-bank-expanded-body">
+              <div class="mobile-bank-row">
+                <span class="mb-label">Bank</span>
+                <span class="mb-val">Islami Bank Bangladesh Ltd.</span>
+              </div>
+              <div class="mobile-bank-row">
+                <span class="mb-label">Account Number</span>
+                <div class="mb-acc-val">
+                  <code>20503560301151415</code>
+                  <button class="copy-btn mb-copy-btn" onclick="copyAccount()" title="Copy account number" aria-label="Copy account number">
+                    <i class="fas fa-copy" aria-hidden="true"></i> Copy
+                  </button>
+                </div>
+              </div>
+              <div class="mobile-bank-row">
+                <span class="mb-label">Account Type</span>
+                <span class="bank-badge">Savings Account</span>
+              </div>
+            </div>
+          </details>
         </div>
-        <div class="progress-legend">
-          <span><span class="dot paid"></span> Paid</span>
-          <span><span class="dot due"></span> Pending</span>
+
+        <!-- 📊 Stats Cards -->
+        <div class="stats-grid" id="statsGrid">
+          <!-- Dynamically populated -->
         </div>
-      </div>
 
-      <div class="section-label">Monthly Overview</div>
-      <div id="tableContainer"></div>
-
-      <div class="section-label">Member Summary</div>
-      <div id="personSummary"></div>
-
-      <div id="personDetails"></div>
-
-      <div class="section-label">Analytics</div>
-      <div class="charts">
-        <div class="chart-card">
-          <h3>
-            <span class="dot" style="background: var(--accent)"></span> Yearly
-            Collection
-          </h3>
-          <canvas id="barChart"></canvas>
+        <!-- 📈 Progress Bar -->
+        <div class="progress-section">
+          <div class="progress-header">
+            <span>Collection Progress <small id="progressScopeText" class="progress-scope-label">(All Records)</small></span>
+            <span id="progressText">0%</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-legend">
+            <span><span class="dot paid" aria-hidden="true"></span> Paid</span>
+            <span><span class="dot partial" aria-hidden="true"></span> Partially Paid</span>
+            <span><span class="dot due" aria-hidden="true"></span> Pending</span>
+            <span><span class="dot overdue" aria-hidden="true"></span> Overdue</span>
+          </div>
         </div>
-        <div class="chart-card">
-          <h3>
-            <span class="dot" style="background: var(--accent2)"></span>
-            Distribution Overview
-          </h3>
-          <canvas id="pieChart"></canvas>
+
+        <!-- ⚙️ Due / Overdue Members Alert -->
+        <div id="dueAlerts" class="due-alerts hidden"></div>
+
+        <div class="section-label">
+          <span>Monthly Installments</span>
+          <small id="accordionScopeLabel" class="section-scope-label">All Months · 2026</small>
         </div>
-      </div>
+        <div id="tableContainer"></div>
+      </section>
 
-      <!-- ⚙️ Due Members Alert -->
-      <div id="dueAlerts" class="due-alerts hidden"></div>
+      <!-- ═════════ SECTION 2: MEMBERS ═════════ -->
+      <section id="sec-members" class="tab-pane hidden" role="tabpanel" aria-labelledby="tab-members">
+        <div class="tab-pane-header">
+          <h2><i class="fas fa-users" aria-hidden="true"></i> Member Directory</h2>
+        </div>
+        <div class="section-label">
+          <span>Member Summary</span>
+          <small id="memberSummaryScopeLabel" class="section-scope-label">Matching Members</small>
+        </div>
+        <div id="personSummary"></div>
+        <div id="personDetails"></div>
+      </section>
 
-      <div class="section-label">Savings Calculator</div>
+      <!-- ═════════ SECTION 3: REPORTS & ANALYTICS ═════════ -->
+      <section id="sec-reports" class="tab-pane hidden" role="tabpanel" aria-labelledby="tab-reports">
+        <div class="tab-pane-header">
+          <h2><i class="fas fa-chart-line" aria-hidden="true"></i> Reports & Analytics</h2>
+          <div class="reports-header-actions mobile-only-flex">
+            <button class="btn-export" onclick="exportToCSV()" title="Export filtered records to CSV">
+              <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
+            </button>
+            <button class="btn-print" onclick="printFilteredReport()" title="Print or save as PDF">
+              <i class="fas fa-print" aria-hidden="true"></i> Print / PDF
+            </button>
+          </div>
+        </div>
+        <div class="section-label">
+          <span>Analytics & Visualizations</span>
+          <small id="analyticsScopeLabel" class="section-scope-label">Yearly & Status Breakdown</small>
+        </div>
+        <div class="charts">
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3>
+                <span class="dot" style="background: var(--accent)" aria-hidden="true"></span>
+                Collection Breakdown
+              </h3>
+              <span class="chart-scope-sub" id="chartBreakdownScope">Filtered Scope</span>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="pieChart"></canvas>
+            </div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3>
+                <span class="dot" style="background: var(--accent2)" aria-hidden="true"></span>
+                Monthly Performance Trend
+              </h3>
+              <span class="chart-scope-sub" id="chartTrendScope">Allocated Installments vs Collected</span>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="barChart"></canvas>
+            </div>
+            <div class="chart-caption-hint">
+              * Displays expected, collected, and outstanding amounts allocated to each installment cycle in the selected year.
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabular Alternative for Analytics (Accessibility) -->
+        <div class="section-label" style="margin-top: 28px;">
+          <span>Performance Breakdown (Tabular Alternative)</span>
+        </div>
+        <div id="analyticsTableContainer" class="analytics-table-wrap"></div>
+
+        <!-- Detailed Filtered Records Table & Report Exports -->
+        <div class="reports-header-bar">
+          <div class="section-label" style="margin: 0;">
+            <span>Filtered Installment Statement</span>
+          </div>
+          <div class="reports-export-btns">
+            <button class="btn-export" onclick="exportToCSV()" title="Export current filtered view to CSV">
+              <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
+            </button>
+            <button class="btn-print" onclick="printFilteredReport()" title="Print or save as PDF">
+              <i class="fas fa-print" aria-hidden="true"></i> Print / PDF
+            </button>
+          </div>
+        </div>
+        <div id="tabularReportContainer" class="tabular-report-wrap"></div>
+
+        <!-- 🛡️ Audit History Section -->
+        <div class="section-label" style="margin-top: 36px;">
+          <span>Administrative Audit History</span>
+          <small class="section-scope-label">Logged actions from Shared Admin Session</small>
+        </div>
+        <div class="audit-info-notice">
+          <i class="fas fa-info-circle" aria-hidden="true"></i>
+          <span>Administrative payment adjustments, new cycles, and status modifications are recorded below. Session identity is honestly attributed to <strong>Shared Admin Session</strong>.</span>
+        </div>
+        <div id="auditLogContainer" class="audit-log-wrap"></div>
+      </section>
+
+      <!-- ═════════ SECTION 4: SAVINGS CALCULATOR ═════════ -->
+      <section id="sec-calculator" class="tab-pane hidden" role="tabpanel" aria-labelledby="tab-calculator">
+        <div class="tab-pane-header">
+          <h2><i class="fas fa-calculator" aria-hidden="true"></i> Savings Calculator</h2>
+        </div>
+        <div class="section-label">
+          <span>Mudaraba Savings & Investment Calculators</span>
+        </div>
+
+        <!-- Disclaimers & Banking Context Notice -->
+        <div class="calc-disclaimer-box">
+          <div class="calc-disc-title"><i class="fas fa-balance-scale" aria-hidden="true"></i> Islamic Banking & Calculation Methodology</div>
+          <p>
+            Calculations are projected estimates based on standard Islamic banking profit-sharing principles (Mudaraba).
+            Installments are assumed to be deposited at the beginning of each monthly cycle and compounded monthly.
+          </p>
+          <div class="calc-disc-tax-note">
+            <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+            <strong>Tax & Duty Notice:</strong> Projected values are <em>gross returns</em>. In accordance with Bangladesh Bank and NBR regulations, Govt. withholding tax (10% with TIN, 15% without TIN) and applicable bank excise duties will be deducted upon maturity.
+          </div>
+          <div class="calc-disc-rate-note">
+            <i class="fas fa-percent" aria-hidden="true"></i>
+            <strong>Profit Rates:</strong> Rates shown are <em>editable example rates</em> reflecting typical Islamic banking trends (approx. 7.5%–9.0%). Rates are not guaranteed and fluctuate based on investment pool performance.
+          </div>
+        </div>
 
       <div class="calc-shell">
         <div class="calc-tabs">
@@ -447,49 +758,87 @@
         </div>
         <!-- /panel-dps -->
       </div>
+      <!-- /calc-shell -->
+      </section>
+    </div>
+    <!-- /wrapper -->
+
+    <!-- 🔍 Expandable Payment Detail & Partial Payment Modal -->
+    <div id="paymentDetailModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pmtDetailTitle">
+      <div class="modal-content pmt-detail-modal-content">
+        <div class="modal-header">
+          <h3 id="pmtDetailTitle"><i class="fas fa-receipt" aria-hidden="true"></i> Installment Details</h3>
+          <button class="modal-close" onclick="closePaymentDetailModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div id="pmtDetailBody" class="pmt-detail-body">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+    </div>
+
+    <!-- 🗓️ Edit Due Date Modal (Admin) -->
+    <div id="editDueDateModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dueDateModalTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="dueDateModalTitle"><i class="fas fa-calendar-alt" aria-hidden="true"></i> Configure Cycle Due Date</h3>
+          <button class="modal-close" onclick="closeEditDueDateModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="editDueDateForm" class="modal-form" onsubmit="handleSaveDueDate(event)">
+          <input type="hidden" id="dueDateTargetYear" />
+          <input type="hidden" id="dueDateTargetMonth" />
+          <div class="form-group">
+            <label id="dueDateCycleLabel">Cycle</label>
+            <input type="text" id="dueDateCycleText" readonly style="opacity: 0.85;" />
+          </div>
+          <div class="form-group">
+            <label for="dueDateInput">Cycle Due Date (Asia/Dhaka)</label>
+            <input type="date" id="dueDateInput" required />
+            <small style="color: var(--text-3); display: block; margin-top: 4px; font-size: 11px;">Unpaid balances past this date in Asia/Dhaka will be flagged as Overdue.</small>
+          </div>
+          <button type="submit" class="btn-submit" id="saveDueDateBtn">Save Due Date</button>
+        </form>
+      </div>
     </div>
 
     <!-- Add Payment Modal (Demo) -->
-    <div id="addModal" class="modal hidden">
+    <div id="addModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="addModalTitle">
       <div class="modal-content">
         <div class="modal-header">
-          <h3><i class="fas fa-plus-circle"></i> Add Payment</h3>
-          <button class="modal-close" onclick="closeModal()">&times;</button>
+          <h3 id="addModalTitle"><i class="fas fa-plus-circle" aria-hidden="true"></i> Quick Add / Update Payment</h3>
+          <button class="modal-close" onclick="closeModal()" aria-label="Close modal">&times;</button>
         </div>
         <form id="addForm" class="modal-form">
           <div class="form-group">
-            <label>Member Name</label>
+            <label for="modalName">Member Name</label>
             <select id="modalName" required></select>
           </div>
           <div class="form-group">
-            <label>Month</label>
+            <label for="modalMonth">Month</label>
             <select id="modalMonth" required></select>
           </div>
           <div class="form-group">
-            <label>Amount (Tk)</label>
-            <input type="number" id="modalAmount" value="1000" required />
+            <label for="modalAmount">Expected Amount (৳)</label>
+            <input type="number" id="modalAmount" value="1000" min="100" step="100" required />
           </div>
           <div class="form-group checkbox">
-            <label><input type="checkbox" id="modalPaid" checked /> Paid</label>
+            <label><input type="checkbox" id="modalPaid" checked /> Paid in Full</label>
           </div>
-          <button type="submit" class="btn-submit">Save Payment</button>
+          <button type="submit" class="btn-submit" id="savePaymentBtn">Save Payment</button>
         </form>
       </div>
     </div>
 
     <!-- 🗓️ Start New Month / Year Modal -->
-    <div id="newMonthModal" class="modal hidden">
+    <div id="newMonthModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="newMonthModalTitle">
       <div class="modal-content">
         <div class="modal-header">
-          <h3><i class="fas fa-calendar-plus"></i> Start New Month</h3>
-          <button class="modal-close" onclick="closeNewMonthModal()">
-            &times;
-          </button>
+          <h3 id="newMonthModalTitle"><i class="fas fa-calendar-plus" aria-hidden="true"></i> Start New Month</h3>
+          <button class="modal-close" onclick="closeNewMonthModal()" aria-label="Close modal">&times;</button>
         </div>
         <form id="newMonthForm" class="modal-form">
           <div style="display: flex; gap: 12px">
             <div class="form-group" style="flex: 1">
-              <label>Year</label>
+              <label for="newMonthYear">Year</label>
               <input
                 type="number"
                 id="newMonthYear"
@@ -499,12 +848,20 @@
               />
             </div>
             <div class="form-group" style="flex: 1.4">
-              <label>Month</label>
+              <label for="newMonthSelect">Month</label>
               <select id="newMonthSelect" required></select>
             </div>
           </div>
           <div class="form-group">
-            <label>Default Amount per Member (৳)</label>
+            <label for="newMonthDueDate">Cycle Due Date (Asia/Dhaka)</label>
+            <input
+              type="date"
+              id="newMonthDueDate"
+            />
+            <small style="color: var(--text-3); font-size: 11px;">Default is 15th of the month. Sets the overdue boundary in Asia/Dhaka time.</small>
+          </div>
+          <div class="form-group">
+            <label for="newMonthAmount">Default Amount per Member (৳)</label>
             <input
               type="number"
               id="newMonthAmount"
@@ -531,7 +888,7 @@
             <div id="newMonthMembersList" class="members-checkbox-grid"></div>
           </div>
           <div class="form-group" style="margin-top: 6px">
-            <label>Add Extra Member (Optional)</label>
+            <label for="newExtraMemberInput">Add Extra Member (Optional)</label>
             <div style="display: flex; gap: 8px">
               <input
                 type="text"
@@ -547,8 +904,8 @@
               </button>
             </div>
           </div>
-          <button type="submit" class="btn-submit" style="margin-top: 14px">
-            <i class="fas fa-check-circle"></i> Create Month for All Members
+          <button type="submit" class="btn-submit" id="createNewMonthSubmitBtn" style="margin-top: 14px">
+            <i class="fas fa-check-circle" aria-hidden="true"></i> Create Month for All Members
           </button>
         </form>
       </div>
@@ -616,6 +973,82 @@
                 </button>
               </form>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 📱 Mobile Header Menu Drawer / Sheet -->
+    <div id="mobileMenuSheet" class="mobile-menu-modal hidden" role="dialog" aria-modal="true" aria-labelledby="mobileMenuTitle">
+      <div class="mobile-menu-backdrop" onclick="closeMobileMenu()"></div>
+      <div class="mobile-menu-content">
+        <div class="mobile-menu-header">
+          <h3 id="mobileMenuTitle"><i class="fas fa-bars" aria-hidden="true"></i> Menu & Settings</h3>
+          <button class="modal-close" type="button" onclick="closeMobileMenu()" aria-label="Close menu">&times;</button>
+        </div>
+        <div class="mobile-menu-body">
+          <!-- Role / Access Mode -->
+          <div class="menu-item-group">
+            <div class="menu-item-label">Access Mode</div>
+            <div class="menu-role-status">
+              <span id="mobileMenuRoleBadge" class="role-badge member"><i class="fas fa-eye" aria-hidden="true"></i> Member (View Only)</span>
+            </div>
+            <button class="btn-role-admin" id="mobileMenuAuthBtn" type="button" onclick="handleAuthSwitchFromMenu()">
+              <i class="fas fa-lock" aria-hidden="true"></i> <span id="mobileMenuAuthBtnText">Admin Login</span>
+            </button>
+          </div>
+
+          <!-- Theme Toggle -->
+          <div class="menu-item-group">
+            <div class="menu-item-label">Appearance</div>
+            <button class="menu-action-btn" type="button" onclick="toggleThemeFromMenu()">
+              <i id="mobileMenuThemeIcon" class="fas fa-moon" aria-hidden="true"></i>
+              <span id="mobileMenuThemeText">Dark Mode (Tap to switch)</span>
+            </button>
+          </div>
+
+          <!-- Payment Account Shortcut -->
+          <div class="menu-item-group">
+            <div class="menu-item-label">Payment Account</div>
+            <button class="menu-action-btn" type="button" onclick="openPaymentAccountFromMenu()">
+              <i class="fas fa-university" aria-hidden="true"></i>
+              <span>View Bank Account (Islami Bank)</span>
+            </button>
+          </div>
+
+          <!-- Admin Actions (Only active in admin mode) -->
+          <div class="menu-item-group admin-only">
+            <div class="menu-item-label">Admin Actions</div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-add" type="button" style="flex: 1; justify-content: center;" onclick="closeMobileMenu(); openModal();">
+                <i class="fas fa-plus-circle" aria-hidden="true"></i> Add Payment
+              </button>
+              <button class="btn-new-month" type="button" style="flex: 1; justify-content: center;" onclick="closeMobileMenu(); openNewMonthModal();">
+                <i class="fas fa-calendar-plus" aria-hidden="true"></i> New Month
+              </button>
+            </div>
+          </div>
+
+          <!-- Sync & System Info -->
+          <div class="menu-item-group">
+            <div class="menu-item-label">Database & Sync Info</div>
+            <div class="menu-sync-info">
+              <div class="menu-sync-row">
+                <span><i class="fas fa-database" aria-hidden="true"></i> Database:</span>
+                <strong id="mobileMenuDbText">Connecting...</strong>
+              </div>
+              <div class="menu-sync-row">
+                <span><i class="fas fa-edit" aria-hidden="true"></i> Modified:</span>
+                <span id="mobileMenuModifiedText">Baseline data</span>
+              </div>
+              <div class="menu-sync-row">
+                <span><i class="fas fa-clock" aria-hidden="true"></i> Synced:</span>
+                <span id="mobileMenuSyncedText">Live</span>
+              </div>
+            </div>
+            <button id="mobileMenuRetryBtn" class="btn-db-retry hidden" type="button" onclick="retryDbConnection(); closeMobileMenu();" style="margin-top: 6px;">
+              <i class="fas fa-redo-alt" aria-hidden="true"></i> Retry Connection
+            </button>
           </div>
         </div>
       </div>
