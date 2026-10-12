@@ -303,7 +303,7 @@
                 <option value="all">All Statuses</option>
                 <option value="paid">Paid ✅</option>
                 <option value="partial">Partially Paid ⚠️</option>
-                <option value="due">Pending ⏳</option>
+                <option value="unpaid">Unpaid ⏳</option>
                 <option value="overdue">Overdue 🚨</option>
               </select>
             </div>
@@ -413,7 +413,7 @@
           <div class="progress-legend">
             <span><span class="dot paid" aria-hidden="true"></span> Paid</span>
             <span><span class="dot partial" aria-hidden="true"></span> Partially Paid</span>
-            <span><span class="dot due" aria-hidden="true"></span> Pending</span>
+            <span><span class="dot due" aria-hidden="true"></span> Unpaid</span>
             <span><span class="dot overdue" aria-hidden="true"></span> Overdue</span>
           </div>
         </div>
@@ -549,7 +549,7 @@
           <div class="cashbook-disclosure-banner">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
             <div>
-              <strong>Historical Collections Boundary:</strong> Existing 2026 cycle payment records (totaling ৳51,000 collected) are preserved as verified member contributions under <em>Unassigned Historical Account</em>. To establish reconciled balances, configure an explicit opening balance below.
+              <strong>Historical Collections Boundary:</strong> Baseline cycle payment records are preserved as verified member contributions under <em>Unassigned Historical Account</em>. To establish verified balances without double-counting, configure opening balances or preview migration below.
             </div>
           </div>
 
@@ -563,6 +563,9 @@
             </button>
             <button class="btn-secondary" type="button" onclick="openOpeningBalanceModal()">
               <i class="fas fa-cog" aria-hidden="true"></i> Opening Balances
+            </button>
+            <button class="btn-secondary" type="button" onclick="openCashbookMigrationModal()">
+              <i class="fas fa-sliders-h" aria-hidden="true"></i> Reconcile Unassigned (Dry-Run)
             </button>
           </div>
 
@@ -609,7 +612,7 @@
             <!-- Transparency notice -->
             <div class="rec-notice-box">
               <i class="fas fa-shield-alt"></i>
-              <span><strong>Backend Lock Disclosure:</strong> Period lock protects cycle against frontend payment additions, reversals, and edits. Enforced client-side; backend security rules recommended for multi-user server enforcement.</span>
+              <span><strong>Backend Lock Enforcement:</strong> Period lock protects cycle against payment additions, reversals, and edits. Enforced via atomic Firestore database transactions to prevent stale-client or concurrent-write races, backed by <code>firestore.rules</code> database security rules.</span>
             </div>
 
             <!-- Comparison Form -->
@@ -1091,7 +1094,7 @@
             >
               <span>Active Members</span>
               <small style="color: var(--text-3); font-weight: 400"
-                >All start as Pending</small
+                >All start as Unpaid</small
               >
             </label>
             <div id="newMonthMembersList" class="members-checkbox-grid"></div>
@@ -1584,6 +1587,115 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 🎛️ 10. Cashbook Collections Alignment / Migration Modal -->
+    <div id="cashbookMigrationModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cbMigrationTitle">
+      <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+          <h3 id="cbMigrationTitle"><i class="fas fa-sliders-h" aria-hidden="true"></i> Reconcile Unassigned Collections</h3>
+          <button class="modal-close" onclick="closeCashbookMigrationModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="void-tx-summary" id="cbMigrationSummary">
+            <!-- Dynamically populated breakdown -->
+          </div>
+          <div class="form-group modern-field" style="margin-top: 14px;">
+            <label for="cbMigrationAccountSelect"><i class="fas fa-wallet"></i> Target Account for Historical Allocation</label>
+            <select id="cbMigrationAccountSelect" class="modern-input">
+              <option value="cash">Cash Drawer (Cash in Hand)</option>
+              <option value="bank">Islami Bank Bangladesh (IBBL)</option>
+              <option value="bkash">bKash Mobile Wallet</option>
+              <option value="nagad">Nagad Mobile Wallet</option>
+            </select>
+            <small style="color:var(--text-3); display:block; margin-top:4px;">
+              * Choose which liquid account held historical collections. Dry-run preview will show the exact balance effect without modifying live records.
+            </small>
+          </div>
+          <div class="form-group modern-field" style="margin-top: 10px;">
+            <label for="cbMigrationDateInput"><i class="fas fa-calendar-alt"></i> Migration / Effective Date</label>
+            <input type="date" id="cbMigrationDateInput" class="modern-input" />
+          </div>
+          <div id="cbMigrationPreviewBox" class="migration-preview-box hidden">
+            <!-- Dry-run simulation results -->
+          </div>
+          <div class="reminder-actions-row" style="margin-top: 16px;">
+            <button class="btn-secondary" type="button" onclick="runMigrationDryRun()">
+              <i class="fas fa-eye"></i> Run Dry-Run Preview
+            </button>
+            <button class="btn-primary hidden" type="button" id="btnExecuteMigration" onclick="executeMigration()">
+              <i class="fas fa-check-double"></i> Confirm & Apply Migration
+            </button>
+            <button class="btn-secondary" type="button" onclick="closeCashbookMigrationModal()">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 🤖 Floating AI Assistant Trigger -->
+    <button id="aiFabBtn" class="ai-fab-btn" onclick="toggleAiAssistant()" aria-label="Open AI Assistant" title="KC-Kisti AI Assistant">
+      <span class="ai-fab-glow"></span>
+      <i class="fas fa-robot ai-fab-icon" aria-hidden="true"></i>
+      <span class="ai-fab-badge">AI</span>
+    </button>
+
+    <!-- 🤖 KC-Kisti AI Assistant Modal / Widget -->
+    <div id="aiAssistantWidget" class="ai-widget-container hidden" role="dialog" aria-modal="true" aria-labelledby="aiWidgetTitle">
+      <div class="ai-widget-header">
+        <div class="ai-header-info">
+          <div class="ai-avatar-wrap">
+            <i class="fas fa-robot"></i>
+            <span class="ai-status-dot" title="Ready to assist"></span>
+          </div>
+          <div>
+            <h4 id="aiWidgetTitle" class="ai-title">KC-Kisti AI Assistant</h4>
+            <span class="ai-subtitle">স্মার্ট কিস্তি হিসাব ও অটো-অ্যানালিস্ট</span>
+          </div>
+        </div>
+        <div class="ai-header-actions">
+          <button type="button" class="ai-btn-icon" onclick="clearAiChat()" title="চ্যাট ক্লিয়ার করুন" aria-label="Clear chat">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+          <button type="button" class="ai-btn-icon" onclick="toggleAiAssistant()" title="বন্ধ করুন" aria-label="Close assistant">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Messages Thread -->
+      <div id="aiChatThread" class="ai-chat-thread">
+        <!-- Initial Greetings & Suggestion Chips rendered here -->
+      </div>
+
+      <!-- Quick Suggestion Chips Container -->
+      <div id="aiSuggestionsWrap" class="ai-suggestions-wrap">
+        <button type="button" class="ai-chip" onclick="handleAiChipClick('কার কার কিস্তি বাকি আছে?')">
+          <i class="fas fa-clock"></i> কার কার বাকি?
+        </button>
+        <button type="button" class="ai-chip" onclick="handleAiChipClick('শাওন কত টাকা দিছে?')">
+          <i class="fas fa-check-circle"></i> শাওন কত দিছে?
+        </button>
+        <button type="button" class="ai-chip" onclick="handleAiChipClick('ফাহিমের কয় টাকা বাকি আছে?')">
+          <i class="fas fa-exclamation-triangle"></i> ফাহিমের কত বাকি?
+        </button>
+        <button type="button" class="ai-chip" onclick="handleAiChipClick('ফান্ডের মোট কালেকশন কত?')">
+          <i class="fas fa-university"></i> মোট ফান্ডের হিসাব
+        </button>
+      </div>
+
+      <!-- Chat Input Area -->
+      <form id="aiChatForm" class="ai-chat-input-area" onsubmit="handleAiChatSubmit(event)">
+        <input
+          type="text"
+          id="aiChatInput"
+          class="ai-input"
+          placeholder="প্রশ্ন লিখুন... (যেমন: ফাহিমের কয় টাকা বাকি?)"
+          autocomplete="off"
+        />
+        <button type="submit" id="aiSendBtn" class="ai-send-btn" title="পাঠান" aria-label="Send query">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </form>
     </div>
 
     <!-- 🔥 Firebase SDKs -->

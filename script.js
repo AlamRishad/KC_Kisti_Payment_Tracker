@@ -87,6 +87,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initCalculators();
   initPwaAndServiceWorker();
   initDataStore();
+  initAiAssistant();
 });
 
 // ── Currency Exact Arithmetic (Poisha Integer Math) ───────────────
@@ -146,25 +147,64 @@ function getDhakaShortTime(dateObj = new Date()) {
 }
 
 // 🛡️ Safe Universal Audit Timestamp Formatter
-// Formats as "10 Oct 2026, 10:52 PM BD time" or "Time not recorded"
+// Formats timestamps with time as "10 Oct 2026, 10:52 PM BD time"
+// Formats legacy date-only records as "10 Oct 2026 · Time unavailable"
+// Formats missing or invalid timestamps as "Time not recorded"
 function formatAuditTimestamp(raw) {
-  if (!raw) return "Time not recorded";
+  if (!raw || raw === "Time not recorded") return "Time not recorded";
   try {
     let dt = null;
-    if (typeof raw === "object" && typeof raw.toDate === "function") {
-      dt = raw.toDate();
-    } else if (typeof raw === "object" && typeof raw.seconds === "number") {
-      dt = new Date(raw.seconds * 1000 + (raw.nanoseconds ? raw.nanoseconds / 1e6 : 0));
-    } else if (raw instanceof Date) {
-      dt = raw;
+
+    if (typeof raw === "object") {
+      if (typeof raw.toDate === "function") {
+        dt = raw.toDate();
+      } else if (typeof raw.seconds === "number") {
+        dt = new Date(raw.seconds * 1000 + (raw.nanoseconds ? raw.nanoseconds / 1e6 : 0));
+      } else if (raw instanceof Date) {
+        dt = raw;
+      }
     } else if (typeof raw === "number") {
       dt = new Date(raw);
     } else if (typeof raw === "string") {
-      dt = new Date(raw);
-      if (isNaN(dt.getTime())) {
-        const clean = raw.replace(" BD time", "").trim();
-        dt = new Date(clean);
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed === "Time not recorded") return "Time not recorded";
+      if (trimmed.includes("· Time unavailable")) return trimmed;
+
+      // Check if string has an explicit time component
+      const hasTime = /\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(trimmed) || /T\d{1,2}:\d{2}/.test(trimmed);
+
+      if (!hasTime) {
+        // Date-only record: do NOT invent a missing time! E.g. "2026-10-10", "2026-10-10 Oct", "10 Oct 2026"
+        const ymMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (ymMatch) {
+          const y = parseInt(ymMatch[1], 10);
+          const m = parseInt(ymMatch[2], 10);
+          const d = parseInt(ymMatch[3], 10);
+          const dateObj = new Date(Date.UTC(y, m - 1, d));
+          const datePart = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "UTC",
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          }).format(dateObj);
+          return `${datePart} · Time unavailable`;
+        }
+
+        const parsed = new Date(trimmed.replace(/[^a-zA-Z0-9\s-]/g, " ").trim());
+        if (!isNaN(parsed.getTime())) {
+          const datePart = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Asia/Dhaka",
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          }).format(parsed);
+          return `${datePart} · Time unavailable`;
+        }
+        return "Time not recorded";
       }
+
+      const clean = trimmed.replace(" BD time", "").trim();
+      dt = new Date(clean);
     }
 
     if (!dt || isNaN(dt.getTime())) {
@@ -328,6 +368,11 @@ function normalizePaymentRecord(payment, monthDueDate = null) {
   let daysOverdue = 0;
   let isOverdue = false;
 
+  // Support legacy stored status values through compatibility mapping
+  let legacyStatus = payment.status ? String(payment.status).toLowerCase() : "";
+  if (legacyStatus === "due" || legacyStatus === "pending") legacyStatus = "unpaid";
+  if (legacyStatus === "partial") legacyStatus = "partially_paid";
+
   if (paidAmount >= expected) {
     status = paidAmount > expected ? "overpaid" : "paid";
   } else if (paidAmount > 0) {
@@ -344,9 +389,6 @@ function normalizePaymentRecord(payment, monthDueDate = null) {
       const msPerDay = 1000 * 60 * 60 * 24;
       const diffMs = new Date(todayDhaka) - new Date(monthDueDate);
       daysOverdue = Math.max(1, Math.floor(diffMs / msPerDay));
-      if (status === "unpaid") {
-        status = "overdue";
-      }
     }
   }
 
@@ -587,8 +629,8 @@ function retryDbConnection() {
   initDataStore();
 }
 
-// Sync updates to cloud database
-async function savePaymentDataToStore() {
+// Sync updates to cloud database with atomic period-lock verification
+async function savePaymentDataToStore(targetCycleKey = null) {
   localStorage.setItem("kisti_payment_data", JSON.stringify(paymentData));
   localStorage.setItem("kisti_fund_cashbook", JSON.stringify(fundCashbook));
   localStorage.setItem("kisti_credit_ledger", JSON.stringify(memberCreditLedger));
@@ -600,10 +642,35 @@ async function savePaymentDataToStore() {
   if (db) {
     try {
       updateDbStatusBadge("syncing");
-      await db.collection("kisti").doc("payments").set({
-        records: paymentData,
-        lastUpdated: lastModifiedAt,
-      });
+
+      // 🛡️ Atomic Period Lock Guard:
+      // If modifying a specific cycle (e.g. "2026-September"), run an atomic transaction
+      // verifying directly against the cloud reconciliations document that the cycle is not closed.
+      // This protects against stale clients and close/write races outside the UI.
+      if (targetCycleKey) {
+        const recRef = db.collection("kisti").doc("reconciliations");
+        const paymentsRef = db.collection("kisti").doc("payments");
+
+        await db.runTransaction(async (transaction) => {
+          const recSnap = await transaction.get(recRef);
+          if (recSnap.exists) {
+            const liveRecs = recSnap.data()?.data || [];
+            const lockedCycle = liveRecs.find((r) => r.cycleKey === targetCycleKey && r.isClosed);
+            if (lockedCycle) {
+              throw new Error(`PERIOD_LOCKED: Cycle ${targetCycleKey} is closed and locked in cloud database.`);
+            }
+          }
+          transaction.set(paymentsRef, {
+            records: paymentData,
+            lastUpdated: lastModifiedAt,
+          });
+        });
+      } else {
+        await db.collection("kisti").doc("payments").set({
+          records: paymentData,
+          lastUpdated: lastModifiedAt,
+        });
+      }
 
       // Save audit logs & finance ledgers to cloud
       if (auditLogs && auditLogs.length > 0) {
@@ -626,6 +693,11 @@ async function savePaymentDataToStore() {
       updateDbStatusBadge("online");
     } catch (err) {
       console.error("Failed to sync to Firestore:", err);
+      if (err.message && err.message.includes("PERIOD_LOCKED")) {
+        updateDbStatusBadge("online");
+        showToast("Database rejected write: Period is locked in cloud database! 🔒", "error");
+        throw err;
+      }
       updateDbStatusBadge("offline", "Saved Locally");
       showToast("Cloud sync failed. Saved to local storage.", "warning");
     }
@@ -804,7 +876,8 @@ function updateMobileFilterSummary() {
     const statusLabels = {
       paid: "Paid",
       partial: "Partially Paid",
-      due: "Pending",
+      due: "Unpaid",
+      unpaid: "Unpaid",
       overdue: "Overdue",
     };
     parts.push(statusLabels[sVal] || sVal);
@@ -1304,8 +1377,8 @@ function applyFilters() {
       if (selectedStatus !== "all") {
         if (selectedStatus === "paid" && p.status !== "paid" && p.status !== "overpaid") return false;
         if (selectedStatus === "partial" && p.status !== "partially_paid") return false;
-        if (selectedStatus === "due" && p.status !== "unpaid") return false;
-        if (selectedStatus === "overdue" && p.status !== "overdue") return false;
+        if ((selectedStatus === "unpaid" || selectedStatus === "due") && p.status !== "unpaid") return false;
+        if (selectedStatus === "overdue" && !p.isOverdue) return false;
       }
 
       return true;
@@ -1436,7 +1509,7 @@ function updateStats(processedMonths, matchingMembersCount, totalActiveMembersCo
       totalPaid += p.paidAmount;
       if (p.balance > 0) {
         totalDue += p.balance;
-        if (p.status === "overdue") {
+        if (p.isOverdue) {
           totalOverdue += p.balance;
         }
       }
@@ -1467,7 +1540,7 @@ function updateStats(processedMonths, matchingMembersCount, totalActiveMembersCo
     <div class="stat-card warning">
       <span class="stat-label">Outstanding Balance</span>
       <span class="stat-value due">${fmtBDT(totalDue)}</span>
-      <span class="stat-sub">${totalOverdue > 0 ? `🚨 ${fmtBDT(totalOverdue)} Overdue` : totalDue > 0 ? "Pending collection" : "All clear!"}</span>
+      <span class="stat-sub">${totalOverdue > 0 ? `🚨 ${fmtBDT(totalOverdue)} Overdue` : totalDue > 0 ? "Outstanding collection" : "All clear!"}</span>
     </div>
     <div class="stat-card">
       <span class="stat-label">${memberLabel}</span>
@@ -1513,7 +1586,7 @@ function checkDueAlerts(processedMonths) {
   processedMonths.forEach((m) => {
     m.normalizedPayments.forEach((p) => {
       if (p.balance > 0) {
-        if (p.status === "overdue") {
+        if (p.isOverdue) {
           overdueList.push({
             name: p.name,
             month: m.month,
@@ -1533,7 +1606,7 @@ function checkDueAlerts(processedMonths) {
 
   if (overdueList.length > 0 || dueList.length > 0) {
     alertBox.classList.remove("hidden");
-    let content = `<h4><i class="fas fa-exclamation-triangle"></i> Pending & Overdue Balances</h4><div class="due-list">`;
+    let content = `<h4><i class="fas fa-exclamation-triangle"></i> Outstanding & Overdue Balances</h4><div class="due-list">`;
 
     overdueList.forEach((item) => {
       content += `<span class="due-badge" style="background: var(--red-dim); border-color: rgba(255,87,87,0.35); color: var(--red);" onclick="openPaymentDetailModal(${filterState.year}, '${item.month}', '${item.name}')">🚨 ${item.name} · ${item.month} (${fmtBDT(item.balance)} · ${item.days}d overdue)</span>`;
@@ -1595,11 +1668,12 @@ function render(processedMonths, year) {
         if (p.status === "paid" || p.status === "overpaid") {
           statusBadge = `<span class="badge-paid" title="Paid in Full: ${fmtBDT(p.paidAmount)}"><i class="fas fa-check-circle" style="font-size:9px"></i> Paid</span>`;
         } else if (p.status === "partially_paid") {
-          statusBadge = `<span class="badge-partial" title="Paid: ${fmtBDT(p.paidAmount)} | Balance: ${fmtBDT(p.balance)}"><i class="fas fa-adjust" style="font-size:9px"></i> Partial (${fmtBDT(p.paidAmount)})</span>`;
-        } else if (p.status === "overdue") {
-          statusBadge = `<span class="badge-overdue" title="Overdue by ${p.daysOverdue} days! Remaining: ${fmtBDT(p.balance)}"><i class="fas fa-exclamation-circle" style="font-size:9px"></i> Overdue (${p.daysOverdue}d)</span>`;
+          statusBadge = `<span class="badge-partial" title="Paid: ${fmtBDT(p.paidAmount)} | Balance: ${fmtBDT(p.balance)}"><i class="fas fa-adjust" style="font-size:9px"></i> Partially Paid (${fmtBDT(p.paidAmount)})</span>`;
         } else {
-          statusBadge = `<span class="badge-due" title="Unpaid balance: ${fmtBDT(p.balance)}"><i class="fas fa-clock" style="font-size:9px"></i> Pending</span>`;
+          statusBadge = `<span class="badge-due" title="Unpaid balance: ${fmtBDT(p.balance)}"><i class="fas fa-times-circle" style="font-size:9px"></i> Unpaid</span>`;
+        }
+        if (p.isOverdue) {
+          statusBadge += ` <span class="badge-overdue" title="Overdue by ${p.daysOverdue} days! Remaining: ${fmtBDT(p.balance)}"><i class="fas fa-exclamation-circle" style="font-size:9px"></i> Overdue (${p.daysOverdue}d)</span>`;
         }
 
         return `
@@ -1639,7 +1713,7 @@ function render(processedMonths, year) {
         </span>
         <div class="acc-meta">
           ${mPaid > 0 ? `<span class="acc-chip chip-paid">${fmtBDT(mPaid)} collected</span>` : ""}
-          ${mDue > 0 ? `<span class="acc-chip chip-due">${fmtBDT(mDue)} pending</span>` : ""}
+          ${mDue > 0 ? `<span class="acc-chip chip-due">${fmtBDT(mDue)} outstanding</span>` : ""}
           <span class="acc-chevron"><i class="fas fa-chevron-down"></i></span>
         </div>
       </div>
@@ -1742,6 +1816,11 @@ async function togglePaymentStatus(month, name, year) {
     payment.paymentsList = [];
   }
 
+  if (rec && rec.status === "reconciled") {
+    rec.status = "invalidated";
+    rec.invalidatedAt = new Date().toISOString();
+  }
+
   await logAuditAction(
     "QUICK_TOGGLE",
     `${name} · ${month} ${year}`,
@@ -1750,7 +1829,7 @@ async function togglePaymentStatus(month, name, year) {
     newStatus,
   );
 
-  await savePaymentDataToStore();
+  await savePaymentDataToStore(`${year}-${month}`);
   showToast(`${name}'s payment for ${month} marked as ${newStatus} ✅`);
   applyFilters();
 }
@@ -1779,7 +1858,7 @@ function renderPersonSummary(processedMonths, year, selectedName, searchQuery) {
       personMap[p.name].expected += p.expectedAmount;
       personMap[p.name].paid += p.paidAmount;
       personMap[p.name].due += Math.max(0, p.balance);
-      if (p.status === "overdue") {
+      if (p.isOverdue) {
         personMap[p.name].overdue += p.balance;
       }
       personMap[p.name].monthsCount += 1;
@@ -1819,7 +1898,7 @@ function renderPersonSummary(processedMonths, year, selectedName, searchQuery) {
             <div class="person-stat-val is-paid">${fmtBDT(data.paid)}</div>
           </div>
           <div class="person-stat">
-            <div class="person-stat-label">Pending</div>
+            <div class="person-stat-label">Outstanding</div>
             <div class="person-stat-val ${data.due > 0 ? "is-due" : "is-paid"}">${fmtBDT(data.due)}</div>
           </div>
         </div>
@@ -1867,7 +1946,7 @@ function showPersonDetails(name, year) {
       totalExpected += p.expectedAmount;
       totalPaid += p.paidAmount;
       totalDue += Math.max(0, p.balance);
-      if (p.status === "overdue") totalOverdue += p.balance;
+      if (p.isOverdue) totalOverdue += p.balance;
 
       memberHistory.push({
         month: m.month,
@@ -1885,11 +1964,12 @@ function showPersonDetails(name, year) {
       if (h.status === "paid" || h.status === "overpaid") {
         statusBadge = `<span class="badge-paid">Paid ✅</span>`;
       } else if (h.status === "partially_paid") {
-        statusBadge = `<span class="badge-partial">Partial ⚠️</span>`;
-      } else if (h.status === "overdue") {
-        statusBadge = `<span class="badge-overdue">Overdue (${h.daysOverdue}d) 🚨</span>`;
+        statusBadge = `<span class="badge-partial">Partially Paid ⚠️</span>`;
       } else {
-        statusBadge = `<span class="badge-due">Pending ⏳</span>`;
+        statusBadge = `<span class="badge-due">Unpaid ⏳</span>`;
+      }
+      if (h.isOverdue) {
+        statusBadge += ` <span class="badge-overdue">Overdue (${h.daysOverdue}d) 🚨</span>`;
       }
 
       const pmtList = h.paymentsList || [];
@@ -2492,7 +2572,12 @@ async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
       `Paid: ${fmtBDT(totalPaid)} (Balance: ${fmtBDT(payment.balance)})`,
     );
 
-    await savePaymentDataToStore();
+    if (rec && rec.status === "reconciled") {
+      rec.status = "invalidated";
+      rec.invalidatedAt = new Date().toISOString();
+    }
+
+    await savePaymentDataToStore(`${year}-${monthName}`);
     showToast(`Payment of ${fmtBDT(amount)} recorded for ${memberName}! ✅`);
     closePaymentDetailModal();
     applyFilters();
@@ -2591,12 +2676,12 @@ function updateAnalyticsCharts(processedMonths, year) {
 
   let countPaid = 0;
   let countPartial = 0;
-  let countPending = 0;
+  let countUnpaid = 0;
   let countOverdue = 0;
 
   let sumPaid = 0;
   let sumPartial = 0;
-  let sumPending = 0;
+  let sumUnpaid = 0;
   let sumOverdue = 0;
 
   processedMonths.forEach((m) => {
@@ -2607,13 +2692,21 @@ function updateAnalyticsCharts(processedMonths, year) {
       } else if (p.status === "partially_paid") {
         countPartial++;
         sumPartial += p.paidAmount;
-        sumPending += p.balance;
-      } else if (p.status === "overdue") {
-        countOverdue++;
-        sumOverdue += p.balance;
+        if (p.isOverdue) {
+          countOverdue++;
+          sumOverdue += p.balance;
+        } else {
+          countUnpaid++;
+          sumUnpaid += p.balance;
+        }
       } else {
-        countPending++;
-        sumPending += p.balance;
+        if (p.isOverdue) {
+          countOverdue++;
+          sumOverdue += p.balance;
+        } else {
+          countUnpaid++;
+          sumUnpaid += p.balance;
+        }
       }
     });
   });
@@ -2628,13 +2721,13 @@ function updateAnalyticsCharts(processedMonths, year) {
     data: {
       labels: [
         `Paid (${fmtBDT(sumPaid)})`,
-        `Partial (${fmtBDT(sumPartial)})`,
-        `Pending (${fmtBDT(sumPending)})`,
+        `Partially Paid (${fmtBDT(sumPartial)})`,
+        `Unpaid (${fmtBDT(sumUnpaid)})`,
         `Overdue (${fmtBDT(sumOverdue)})`,
       ],
       datasets: [
         {
-          data: [sumPaid, sumPartial, sumPending, sumOverdue],
+          data: [sumPaid, sumPartial, sumUnpaid, sumOverdue],
           backgroundColor: isDark
             ? ["#00e5a0", "#f59e0b", "#64748b", "#ff5757"]
             : ["#059669", "#d97706", "#94a3b8", "#dc2626"],
@@ -2785,7 +2878,7 @@ function renderAnalyticsTable(monthLabels, expectedTrend, collectedTrend, outsta
           <td style="font-variant-numeric:tabular-nums; color:var(--green);">${fmtBDT(col)}</td>
           <td style="font-variant-numeric:tabular-nums; color:${out > 0 ? "var(--red)" : "var(--text-3)"};">${fmtBDT(out)}</td>
           <td style="font-variant-numeric:tabular-nums;">${rate}%</td>
-          <td>${col >= exp ? '<span class="badge-paid">Complete ✅</span>' : '<span class="badge-due">Pending ⏳</span>'}</td>
+          <td>${col >= exp ? '<span class="badge-paid">Complete ✅</span>' : '<span class="badge-due">Outstanding ⏳</span>'}</td>
         </tr>
       `;
     })
@@ -2918,7 +3011,7 @@ function renderAuditHistoryTable() {
     .map(
       (log) => `
       <tr>
-        <td>${log.timestamp}</td>
+        <td>${formatAuditTimestamp(log.timestamp || log.isoDate || log.date)}</td>
         <td><strong>${log.action}</strong></td>
         <td>${log.target}</td>
         <td>${log.details}</td>
@@ -3231,13 +3324,13 @@ async function handleAddPayment(e) {
   await logAuditAction(
     "ADD_PAYMENT",
     `${name} · ${month} ${year}`,
-    `Recorded payment of ৳${amount} (${paid ? "Paid" : "Pending"})`,
+    `Recorded payment of ৳${amount} (${paid ? "Paid" : "Unpaid"})`,
     prevVal,
     `Paid: ${paid}, Amount: ${amount}`,
   );
 
   await savePaymentDataToStore();
-  showToast(`Payment saved: ${name} - ৳${amount.toLocaleString()} (${paid ? "Paid" : "Pending"})`);
+  showToast(`Payment saved: ${name} - ৳${amount.toLocaleString()} (${paid ? "Paid" : "Unpaid"})`);
   closeModal();
 
   populateMonths(year);
@@ -3728,33 +3821,143 @@ function recalculateCashbookBalances() {
   return balancesPoisha;
 }
 
+function getAccountingCollectionsBreakdown() {
+  recalculateCashbookBalances();
+
+  let totalMemberCollections = 0;
+  const paymentRecordMap = new Map();
+
+  paymentData.forEach((y) => {
+    (y.months || []).forEach((m) => {
+      (m.payments || []).forEach((p) => {
+        const pmtList = p.paymentsList || [];
+        if (pmtList.length > 0) {
+          pmtList.forEach((tx) => {
+            if (tx.status === "voided") return;
+            if (tx.isCreditAllocation) return; // Credit reallocation is internal, not new cash inflow
+            const amt = Number(tx.amount) || 0;
+            totalMemberCollections += amt;
+            paymentRecordMap.set(tx.id, {
+              id: tx.id,
+              year: y.year,
+              month: m.month,
+              memberName: p.name,
+              amount: amt,
+              date: tx.date || "Legacy Recorded",
+              method: tx.method || "Cash",
+            });
+          });
+        } else if (p.paid) {
+          const amt = Number(p.paidAmount) || Number(p.amount) || 1000;
+          totalMemberCollections += amt;
+          const fakeId = `legacy_${y.year}_${m.month}_${p.name}`;
+          paymentRecordMap.set(fakeId, {
+            id: fakeId,
+            year: y.year,
+            month: m.month,
+            memberName: p.name,
+            amount: amt,
+            date: "Baseline Record",
+            method: "Legacy Baseline",
+          });
+        }
+      });
+    });
+  });
+
+  const cashbookEntries = fundCashbook.entries || [];
+  const linkedPaymentIds = new Set();
+  let collectionsInCashbook = 0;
+
+  cashbookEntries.forEach((e) => {
+    if (e.status === "voided") return;
+    if (e.type === "inflow" && (e.relatedPaymentId || e.category === "Member Installment Collection")) {
+      collectionsInCashbook += Number(e.amount) || 0;
+      if (e.relatedPaymentId) {
+        linkedPaymentIds.add(e.relatedPaymentId);
+      }
+    }
+  });
+
+  const unassignedPayments = [];
+  paymentRecordMap.forEach((rec, id) => {
+    if (!linkedPaymentIds.has(id)) {
+      unassignedPayments.push(rec);
+    }
+  });
+
+  const unassignedCollections = Math.max(0, totalMemberCollections - collectionsInCashbook);
+  const isOpeningConfigured = !!fundCashbook.openingBalances?.configured;
+  const op = fundCashbook.openingBalances || { bank: 0, cash: 0, bkash: 0, nagad: 0 };
+  const totalOpening = (Number(op.bank) || 0) + (Number(op.cash) || 0) + (Number(op.bkash) || 0) + (Number(op.nagad) || 0);
+
+  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0, openingBalance: 0 };
+  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0, openingBalance: 0 };
+  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0, openingBalance: 0 };
+  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0, openingBalance: 0 };
+  const totalLiquid = bankAcc.balance + cashAcc.balance + bkashAcc.balance + nagadAcc.balance;
+
+  const closedRecs = (monthlyReconciliations || []).filter((r) => r.isClosed);
+  const latestClosed = closedRecs.sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0))[0] || null;
+
+  return {
+    totalMemberCollections,
+    collectionsInCashbook,
+    unassignedCollections,
+    unassignedPayments,
+    isOpeningConfigured,
+    totalOpening,
+    totalLiquid,
+    bankAcc,
+    cashAcc,
+    bkashAcc,
+    nagadAcc,
+    latestClosed,
+    openingDate: op.date || "2026-01-01",
+  };
+}
+
 function renderOverviewFundStrip() {
   const container = document.getElementById("fundStripCards");
   if (!container) return;
-  recalculateCashbookBalances();
 
-  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
-  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
-  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
-  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
-  const totalMobileWallets = bkashAcc.balance + nagadAcc.balance;
-  const totalLiquid = bankAcc.balance + cashAcc.balance + totalMobileWallets;
+  const b = getAccountingCollectionsBreakdown();
+  const totalMobileWallets = b.bkashAcc.balance + b.nagadAcc.balance;
+
+  let totalFundSubtext = "";
+  if (!b.isOpeningConfigured && (fundCashbook.entries || []).length === 0) {
+    totalFundSubtext = `<small class="fund-card-sub" style="color:var(--amber);"><i class="fas fa-exclamation-circle"></i> Opening balance not configured</small>`;
+  } else if (!b.latestClosed) {
+    totalFundSubtext = `<small class="fund-card-sub" style="color:var(--text-3);"><i class="fas fa-clock"></i> Configured · Not reconciled</small>`;
+  } else {
+    totalFundSubtext = `<small class="fund-card-sub" style="color:var(--green);"><i class="fas fa-check-circle"></i> Reconciled as of ${b.latestClosed.month} ${b.latestClosed.year}</small>`;
+  }
+
+  const bankSubtext = !b.isOpeningConfigured && b.bankAcc.balance === 0
+    ? `<small class="fund-card-sub" style="color:var(--amber);">Not configured</small>`
+    : `<small class="fund-card-sub">Islami Bank (IBBL)</small>`;
+  const cashSubtext = !b.isOpeningConfigured && b.cashAcc.balance === 0
+    ? `<small class="fund-card-sub" style="color:var(--amber);">Not configured</small>`
+    : `<small class="fund-card-sub">Cash Drawer</small>`;
+  const walletSubtext = !b.isOpeningConfigured && totalMobileWallets === 0
+    ? `<small class="fund-card-sub" style="color:var(--amber);">Not configured</small>`
+    : `<small class="fund-card-sub">bKash: ${fmtBDT(b.bkashAcc.balance)} · Nagad: ${fmtBDT(b.nagadAcc.balance)}</small>`;
 
   container.innerHTML = `
     <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
       <div class="fund-card-icon bank"><i class="fas fa-university"></i></div>
       <div class="fund-card-content">
         <span class="fund-card-label">Bank Balance</span>
-        <strong class="fund-card-val">${fmtBDT(bankAcc.balance)}</strong>
-        <small class="fund-card-sub">Islami Bank (IBBL)</small>
+        <strong class="fund-card-val">${fmtBDT(b.bankAcc.balance)}</strong>
+        ${bankSubtext}
       </div>
     </div>
     <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
       <div class="fund-card-icon cash"><i class="fas fa-money-bill-wave"></i></div>
       <div class="fund-card-content">
         <span class="fund-card-label">Cash Drawer</span>
-        <strong class="fund-card-val">${fmtBDT(cashAcc.balance)}</strong>
-        <small class="fund-card-sub">Cash in Hand</small>
+        <strong class="fund-card-val">${fmtBDT(b.cashAcc.balance)}</strong>
+        ${cashSubtext}
       </div>
     </div>
     <div class="fund-strip-card" onclick="navigateToReportsSubtab('cashbook')">
@@ -3762,15 +3965,15 @@ function renderOverviewFundStrip() {
       <div class="fund-card-content">
         <span class="fund-card-label">Mobile Wallets</span>
         <strong class="fund-card-val">${fmtBDT(totalMobileWallets)}</strong>
-        <small class="fund-card-sub">bKash: ${fmtBDT(bkashAcc.balance)} · Nagad: ${fmtBDT(nagadAcc.balance)}</small>
+        ${walletSubtext}
       </div>
     </div>
     <div class="fund-strip-card highlight" onclick="navigateToReportsSubtab('cashbook')">
       <div class="fund-card-icon total"><i class="fas fa-coins"></i></div>
       <div class="fund-card-content">
         <span class="fund-card-label">Total Liquid Funds</span>
-        <strong class="fund-card-val" style="color:var(--accent-teal);">${fmtBDT(totalLiquid)}</strong>
-        <small class="fund-card-sub">Reconciled Accounts</small>
+        <strong class="fund-card-val" style="color:var(--accent-teal);">${fmtBDT(b.totalLiquid)}</strong>
+        ${totalFundSubtext}
       </div>
     </div>
   `;
@@ -3779,56 +3982,204 @@ function renderOverviewFundStrip() {
 function renderCashbookKPIs() {
   const container = document.getElementById("cashbookKpiGrid");
   if (!container) return;
-  recalculateCashbookBalances();
 
-  const bankAcc = fundCashbook.accounts.find((a) => a.id === "bank") || { balance: 0 };
-  const cashAcc = fundCashbook.accounts.find((a) => a.id === "cash") || { balance: 0 };
-  const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
-  const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
-  const totalLiquid = bankAcc.balance + cashAcc.balance + bkashAcc.balance + nagadAcc.balance;
-
-  let totalCollections = 0;
-  paymentData.forEach((y) => {
-    (y.months || []).forEach((m) => {
-      (m.payments || []).forEach((p) => {
-        const norm = normalizePaymentRecord(p, m.dueDate);
-        totalCollections += norm.paidAmount;
-      });
-    });
-  });
+  const b = getAccountingCollectionsBreakdown();
 
   container.innerHTML = `
     <div class="cb-kpi-card">
       <span class="cb-kpi-label"><i class="fas fa-university"></i> Islami Bank</span>
-      <strong class="cb-kpi-val">${fmtBDT(bankAcc.balance)}</strong>
-      <small class="cb-kpi-sub">Opening: ${fmtBDT(bankAcc.openingBalance)}</small>
+      <strong class="cb-kpi-val">${fmtBDT(b.bankAcc.balance)}</strong>
+      <small class="cb-kpi-sub">${b.isOpeningConfigured ? `Opening: ${fmtBDT(b.bankAcc.openingBalance)}` : "Opening not configured"}</small>
     </div>
     <div class="cb-kpi-card">
       <span class="cb-kpi-label"><i class="fas fa-money-bill-wave"></i> Cash Drawer</span>
-      <strong class="cb-kpi-val">${fmtBDT(cashAcc.balance)}</strong>
-      <small class="cb-kpi-sub">Opening: ${fmtBDT(cashAcc.openingBalance)}</small>
+      <strong class="cb-kpi-val">${fmtBDT(b.cashAcc.balance)}</strong>
+      <small class="cb-kpi-sub">${b.isOpeningConfigured ? `Opening: ${fmtBDT(b.cashAcc.openingBalance)}` : "Opening not configured"}</small>
     </div>
     <div class="cb-kpi-card">
       <span class="cb-kpi-label"><i class="fas fa-mobile-alt"></i> Mobile Wallets</span>
-      <strong class="cb-kpi-val">${fmtBDT(bkashAcc.balance + nagadAcc.balance)}</strong>
-      <small class="cb-kpi-sub">bKash: ${fmtBDT(bkashAcc.balance)} · Nagad: ${fmtBDT(nagadAcc.balance)}</small>
+      <strong class="cb-kpi-val">${fmtBDT(b.bkashAcc.balance + b.nagadAcc.balance)}</strong>
+      <small class="cb-kpi-sub">bKash: ${fmtBDT(b.bkashAcc.balance)} · Nagad: ${fmtBDT(b.nagadAcc.balance)}</small>
     </div>
     <div class="cb-kpi-card highlight">
       <span class="cb-kpi-label"><i class="fas fa-vault"></i> Total Liquid Accounts</span>
-      <strong class="cb-kpi-val" style="color:var(--accent-teal);">${fmtBDT(totalLiquid)}</strong>
-      <small class="cb-kpi-sub">Opening: ${fmtBDT(fundCashbook.openingBalances.bank + fundCashbook.openingBalances.cash + fundCashbook.openingBalances.bkash + fundCashbook.openingBalances.nagad)}</small>
+      <strong class="cb-kpi-val" style="color:var(--accent-teal);">${fmtBDT(b.totalLiquid)}</strong>
+      <small class="cb-kpi-sub">${b.isOpeningConfigured ? `Opening: ${fmtBDT(b.totalOpening)}` : "Opening not configured"}</small>
     </div>
     <div class="cb-kpi-card">
       <span class="cb-kpi-label"><i class="fas fa-receipt"></i> Verified Member Collections</span>
-      <strong class="cb-kpi-val is-paid">${fmtBDT(totalCollections)}</strong>
+      <strong class="cb-kpi-val is-paid">${fmtBDT(b.totalMemberCollections)}</strong>
       <small class="cb-kpi-sub">Installments Paid to Date</small>
     </div>
     <div class="cb-kpi-card">
-      <span class="cb-kpi-label"><i class="fas fa-history"></i> Legacy Unassigned Collections</span>
-      <strong class="cb-kpi-val" style="color:var(--amber);">৳51,000</strong>
-      <small class="cb-kpi-sub">Pre-Reconciliation Boundary</small>
+      <span class="cb-kpi-label"><i class="fas fa-history"></i> Unassigned Collections</span>
+      <strong class="cb-kpi-val" style="color:var(--amber);">${fmtBDT(b.unassignedCollections)}</strong>
+      <small class="cb-kpi-sub">${b.collectionsInCashbook > 0 ? `Assigned to Cashbook: ${fmtBDT(b.collectionsInCashbook)}` : "Pre-Cashbook / Unallocated"}</small>
     </div>
   `;
+
+  let explainBox = document.getElementById("cbAccountingExplainBox");
+  if (!explainBox) {
+    explainBox = document.createElement("div");
+    explainBox.id = "cbAccountingExplainBox";
+    container.parentNode.insertBefore(explainBox, container.nextSibling);
+  }
+
+  explainBox.className = "accounting-explanation-box";
+  explainBox.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div>
+        <strong><i class="fas fa-balance-scale"></i> Collections vs Cashbook Alignment:</strong>
+        <span> Verified Member Collections: <strong>${fmtBDT(b.totalMemberCollections)}</strong> | Cashbook Liquid Funds: <strong>${fmtBDT(b.totalLiquid)}</strong>.</span>
+        ${b.unassignedCollections > 0 ? `
+          <div style="font-size:12px; color:var(--amber); margin-top:4px;">
+            • <strong>${fmtBDT(b.unassignedCollections)}</strong> (${b.unassignedPayments.length} installment records) collected from members are currently unassigned to specific liquid cashbook accounts.
+            Configure opening balances or preview safe migration to allocate without double-counting.
+          </div>
+        ` : `
+          <div style="font-size:12px; color:var(--green); margin-top:4px;">
+            • All member collections are fully assigned to cashbook accounts or accounted for in opening balances.
+          </div>
+        `}
+      </div>
+      ${currentRole === "admin" && b.unassignedCollections > 0 ? `
+        <button type="button" class="btn-secondary" onclick="openCashbookMigrationModal()" style="padding:5px 12px; font-size:11.5px; border-color:var(--amber); color:var(--amber);">
+          <i class="fas fa-sliders-h"></i> Preview Migration
+        </button>
+      ` : ""}
+    </div>
+  `;
+}
+
+function openCashbookMigrationModal() {
+  if (currentRole !== "admin") {
+    showToast("Admin access required! 🔒", "error");
+    return;
+  }
+  const b = getAccountingCollectionsBreakdown();
+  const summaryEl = document.getElementById("cbMigrationSummary");
+  const dateInput = document.getElementById("cbMigrationDateInput");
+  const previewBox = document.getElementById("cbMigrationPreviewBox");
+  const execBtn = document.getElementById("btnExecuteMigration");
+
+  if (dateInput) dateInput.value = b.openingDate || getDhakaDateString();
+  if (previewBox) {
+    previewBox.classList.add("hidden");
+    previewBox.innerHTML = "";
+  }
+  if (execBtn) execBtn.classList.add("hidden");
+
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <strong>Historical Collections Allocation Status</strong><br/>
+      • Total Verified Member Collections: <strong>${fmtBDT(b.totalMemberCollections)}</strong><br/>
+      • Collections Currently Linked to Cashbook: <strong>${fmtBDT(b.collectionsInCashbook)}</strong><br/>
+      • Unassigned Collections Awaiting Account: <strong style="color:var(--amber);">${fmtBDT(b.unassignedCollections)}</strong> (${b.unassignedPayments.length} payment records)<br/>
+      • Current Liquid Funds: <strong>${fmtBDT(b.totalLiquid)}</strong>
+    `;
+  }
+
+  const modal = document.getElementById("cashbookMigrationModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeCashbookMigrationModal() {
+  const modal = document.getElementById("cashbookMigrationModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function runMigrationDryRun() {
+  const b = getAccountingCollectionsBreakdown();
+  const targetAcc = document.getElementById("cbMigrationAccountSelect")?.value || "cash";
+  const previewBox = document.getElementById("cbMigrationPreviewBox");
+  const execBtn = document.getElementById("btnExecuteMigration");
+
+  if (!previewBox) return;
+
+  if (b.unassignedPayments.length === 0) {
+    previewBox.classList.remove("hidden");
+    previewBox.innerHTML = `
+      <div style="color:var(--green); font-weight:600;">
+        <i class="fas fa-check-circle"></i> All member collections are already assigned! No unallocated payments found.
+      </div>
+    `;
+    if (execBtn) execBtn.classList.add("hidden");
+    return;
+  }
+
+  const accLabels = { bank: "Islami Bank", cash: "Cash Drawer", bkash: "bKash", nagad: "Nagad" };
+  const targetName = accLabels[targetAcc] || targetAcc;
+
+  const currentAccBal = b[targetAcc + "Acc"]?.balance || 0;
+  const simulatedNewBal = currentAccBal + b.unassignedCollections;
+
+  let rows = b.unassignedPayments.slice(0, 15).map((p) => `
+    <div>• ${p.memberName} · ${p.month} ${p.year}: <strong>${fmtBDT(p.amount)}</strong> (${p.method})</div>
+  `).join("");
+  if (b.unassignedPayments.length > 15) {
+    rows += `<div style="color:var(--text-3); font-style:italic;">...and ${b.unassignedPayments.length - 15} more records</div>`;
+  }
+
+  previewBox.classList.remove("hidden");
+  previewBox.innerHTML = `
+    <div style="line-height:1.6;">
+      <div style="color:var(--amber); font-weight:700;"><i class="fas fa-flask"></i> DRY-RUN PREVIEW (Zero records modified in database):</div>
+      <div>• Total payments to link: <strong>${b.unassignedPayments.length} records</strong> totaling <strong>${fmtBDT(b.unassignedCollections)}</strong></div>
+      <div>• Target Account: <strong>${targetName}</strong></div>
+      <div>• Simulated ${targetName} Balance: ${fmtBDT(currentAccBal)} → <strong>${fmtBDT(simulatedNewBal)}</strong></div>
+      <div>• Simulated Unassigned Collections Remaining: <strong>৳0</strong></div>
+      <div style="margin-top:8px; border-top:1px dashed var(--border-mid); padding-top:6px;">
+        ${rows}
+      </div>
+    </div>
+  `;
+
+  if (execBtn) execBtn.classList.remove("hidden");
+}
+
+async function executeMigration() {
+  if (currentRole !== "admin") return;
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const b = getAccountingCollectionsBreakdown();
+  if (b.unassignedPayments.length === 0) {
+    showToast("No unassigned payments to migrate.", "info");
+    return;
+  }
+
+  const targetAcc = document.getElementById("cbMigrationAccountSelect")?.value || "cash";
+  const migDate = document.getElementById("cbMigrationDateInput")?.value || getDhakaDateString();
+
+  // Create linked cashbook inflow entries for unassigned payments
+  b.unassignedPayments.forEach((p) => {
+    fundCashbook.entries.push({
+      id: "cbe_mig_" + p.id + "_" + Date.now(),
+      type: "inflow",
+      account: targetAcc,
+      category: "Member Installment Collection",
+      amount: p.amount,
+      date: migDate,
+      reference: `MIG-${p.id}`,
+      notes: `Historical allocation: ${p.memberName} (${p.month} ${p.year})`,
+      relatedPaymentId: p.id,
+      createdAt: new Date().toISOString(),
+      createdBy: "Admin Migration",
+    });
+  });
+
+  recalculateCashbookBalances();
+  await logAuditAction(
+    "MIGRATE_HISTORICAL_COLLECTIONS",
+    `Target: ${targetAcc}`,
+    `Allocated ${b.unassignedPayments.length} historical payments totaling ${fmtBDT(b.unassignedCollections)} to ${targetAcc}.`
+  );
+
+  await savePaymentDataToStore();
+  closeCashbookMigrationModal();
+  renderCashbookKPIs();
+  renderCashbookTable();
+  renderOverviewFundStrip();
+  showToast(`Successfully assigned ${fmtBDT(b.unassignedCollections)} to ${targetAcc}! ⚙️`);
 }
 
 function renderCashbookTable() {
@@ -4094,6 +4445,7 @@ async function handleOpeningBalanceSubmit(e) {
     bkash,
     nagad,
     notes,
+    configured: true,
   };
 
   recalculateCashbookBalances();
@@ -4237,6 +4589,16 @@ async function handleVoidPaymentSubmit(e) {
 
   const { year, monthName, memberName, tx, payment } = targetVoidTxInfo;
 
+  const rec = getCycleReconciliation(year, monthName);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${monthName} ${year} is closed & reconciled. Reopen period to reverse payments. 🔒`, "error");
+    return;
+  }
+  if (rec && rec.status === "reconciled") {
+    rec.status = "invalidated";
+    rec.invalidatedAt = new Date().toISOString();
+  }
+
   tx.status = "voided";
   tx.voidReason = reason;
   tx.voidType = voidType;
@@ -4278,7 +4640,7 @@ async function handleVoidPaymentSubmit(e) {
     `Paid: ${fmtBDT(totalPaid)}`
   );
 
-  await savePaymentDataToStore();
+  await savePaymentDataToStore(`${year}-${monthName}`);
   closeVoidPaymentModal();
   showToast(`Payment of ${fmtBDT(tx.amount)} voided successfully! 🛑`);
   openPaymentDetailModal(year, monthName, memberName);
@@ -4529,7 +4891,13 @@ async function handleAllocateCreditSubmit(e) {
     `${memberName} · ${tMonth} ${year}`,
     `Allocated ${fmtBDT(allocAmount)} from member credit surplus to ${tMonth} ${year}. Balance now: ${fmtBDT(payment.balance)}.`
   );
-  await savePaymentDataToStore();
+
+  if (rec && rec.status === "reconciled") {
+    rec.status = "invalidated";
+    rec.invalidatedAt = new Date().toISOString();
+  }
+
+  await savePaymentDataToStore(`${year}-${tMonth}`);
   closeAllocateCreditModal();
   showToast(`Successfully allocated ${fmtBDT(allocAmount)} credit for ${memberName}! 💳`);
   applyFilters();
@@ -4592,20 +4960,61 @@ function updateReconciliationView() {
   const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
   const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
 
-  const stBank = rec?.statementBalances?.bank ?? bankAcc.balance;
-  const stCash = rec?.statementBalances?.cash ?? cashAcc.balance;
-  const stBkash = rec?.statementBalances?.bkash ?? bkashAcc.balance;
-  const stNagad = rec?.statementBalances?.nagad ?? nagadAcc.balance;
+  function evaluateStatementInput(rawVal, bookBalance, inputEl = null) {
+    if (rawVal === undefined || rawVal === null || String(rawVal).trim() === "") {
+      if (inputEl) inputEl.classList.remove("input-error");
+      return {
+        status: "missing",
+        pill: `<span class="variance-pill missing"><i class="fas fa-question-circle"></i> Not verified</span>`,
+        variance: null,
+        val: null,
+        isValid: false,
+      };
+    }
 
-  const varBank = stBank - bankAcc.balance;
-  const varCash = stCash - cashAcc.balance;
-  const varBkash = stBkash - bkashAcc.balance;
-  const varNagad = stNagad - nagadAcc.balance;
+    const trimmed = String(rawVal).trim();
+    const num = Number(trimmed);
+    if (isNaN(num) || !isFinite(num) || num < 0) {
+      if (inputEl) inputEl.classList.add("input-error");
+      return {
+        status: "invalid",
+        pill: `<span class="variance-pill error"><i class="fas fa-exclamation-circle"></i> Invalid amount</span>`,
+        variance: null,
+        val: null,
+        isValid: false,
+      };
+    }
 
-  const renderVariancePill = (v) => {
-    if (v === 0) return `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`;
-    return `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(v)}</span>`;
-  };
+    if (inputEl) inputEl.classList.remove("input-error");
+    const variance = Math.round((num - bookBalance) * 100) / 100;
+    if (variance === 0) {
+      return {
+        status: "balanced",
+        pill: `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`,
+        variance: 0,
+        val: num,
+        isValid: true,
+      };
+    }
+
+    return {
+      status: "variance",
+      pill: `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(variance)}</span>`,
+      variance: variance,
+      val: num,
+      isValid: true,
+    };
+  }
+
+  const stBank = rec?.statementBalances?.bank !== undefined ? rec.statementBalances.bank : "";
+  const stCash = rec?.statementBalances?.cash !== undefined ? rec.statementBalances.cash : "";
+  const stBkash = rec?.statementBalances?.bkash !== undefined ? rec.statementBalances.bkash : "";
+  const stNagad = rec?.statementBalances?.nagad !== undefined ? rec.statementBalances.nagad : "";
+
+  const evalBank = evaluateStatementInput(stBank, bankAcc.balance);
+  const evalCash = evaluateStatementInput(stCash, cashAcc.balance);
+  const evalBkash = evaluateStatementInput(stBkash, bkashAcc.balance);
+  const evalNagad = evaluateStatementInput(stNagad, nagadAcc.balance);
 
   formContainer.innerHTML = `
     <table class="rec-compare-table">
@@ -4622,40 +5031,40 @@ function updateReconciliationView() {
           <td><i class="fas fa-university"></i> Islami Bank</td>
           <td><strong>${fmtBDT(bankAcc.balance)}</strong></td>
           <td>
-            <input type="number" id="recStmtBank" class="modern-input" value="${stBank}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+            <input type="number" id="recStmtBank" class="modern-input" value="${stBank !== "" ? stBank : ""}" placeholder="Enter verified balance" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
           </td>
-          <td id="recVarBankCell">${renderVariancePill(varBank)}</td>
+          <td id="recVarBankCell">${evalBank.pill}</td>
         </tr>
         <tr>
           <td><i class="fas fa-money-bill-wave"></i> Cash Drawer</td>
           <td><strong>${fmtBDT(cashAcc.balance)}</strong></td>
           <td>
-            <input type="number" id="recStmtCash" class="modern-input" value="${stCash}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+            <input type="number" id="recStmtCash" class="modern-input" value="${stCash !== "" ? stCash : ""}" placeholder="Enter verified balance" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
           </td>
-          <td id="recVarCashCell">${renderVariancePill(varCash)}</td>
+          <td id="recVarCashCell">${evalCash.pill}</td>
         </tr>
         <tr>
           <td><i class="fas fa-mobile-alt"></i> bKash Wallet</td>
           <td><strong>${fmtBDT(bkashAcc.balance)}</strong></td>
           <td>
-            <input type="number" id="recStmtBkash" class="modern-input" value="${stBkash}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+            <input type="number" id="recStmtBkash" class="modern-input" value="${stBkash !== "" ? stBkash : ""}" placeholder="Enter verified balance" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
           </td>
-          <td id="recVarBkashCell">${renderVariancePill(varBkash)}</td>
+          <td id="recVarBkashCell">${evalBkash.pill}</td>
         </tr>
         <tr>
           <td><i class="fas fa-mobile-alt"></i> Nagad Wallet</td>
           <td><strong>${fmtBDT(nagadAcc.balance)}</strong></td>
           <td>
-            <input type="number" id="recStmtNagad" class="modern-input" value="${stNagad}" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
+            <input type="number" id="recStmtNagad" class="modern-input" value="${stNagad !== "" ? stNagad : ""}" placeholder="Enter verified balance" ${isClosed ? "disabled" : ""} oninput="recalculateRecVariances()" />
           </td>
-          <td id="recVarNagadCell">${renderVariancePill(varNagad)}</td>
+          <td id="recVarNagadCell">${evalNagad.pill}</td>
         </tr>
       </tbody>
     </table>
 
     <div class="form-group modern-field" style="margin-top: 14px;">
       <label for="recNotesInput"><i class="fas fa-comment-alt"></i> Reconciliation Notes / Statement Ref</label>
-      <input type="text" id="recNotesInput" class="modern-input" value="${rec?.notes || ""}" placeholder="e.g. Verified with IBBL statement #12345" ${isClosed ? "disabled" : ""} />
+      <input type="text" id="recNotesInput" class="modern-input" value="${rec?.notes || ""}" placeholder="e.g. Verified with IBBL statement #12345 & cash drawer count" ${isClosed ? "disabled" : ""} />
     </div>
 
     <div class="rec-actions-row" style="margin-top:16px;">
@@ -4681,25 +5090,71 @@ function recalculateRecVariances() {
   const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
   const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
 
-  const stBank = parseFloat(document.getElementById("recStmtBank")?.value) || 0;
-  const stCash = parseFloat(document.getElementById("recStmtCash")?.value) || 0;
-  const stBkash = parseFloat(document.getElementById("recStmtBkash")?.value) || 0;
-  const stNagad = parseFloat(document.getElementById("recStmtNagad")?.value) || 0;
+  const elBank = document.getElementById("recStmtBank");
+  const elCash = document.getElementById("recStmtCash");
+  const elBkash = document.getElementById("recStmtBkash");
+  const elNagad = document.getElementById("recStmtNagad");
 
-  const renderVariancePill = (v) => {
-    if (v === 0) return `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`;
-    return `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(v)}</span>`;
-  };
+  const evalBank = evaluateStatementInput(elBank?.value, bankAcc.balance, elBank);
+  const evalCash = evaluateStatementInput(elCash?.value, cashAcc.balance, elCash);
+  const evalBkash = evaluateStatementInput(elBkash?.value, bkashAcc.balance, elBkash);
+  const evalNagad = evaluateStatementInput(elNagad?.value, nagadAcc.balance, elNagad);
 
   const cB = document.getElementById("recVarBankCell");
   const cC = document.getElementById("recVarCashCell");
   const cBk = document.getElementById("recVarBkashCell");
   const cN = document.getElementById("recVarNagadCell");
 
-  if (cB) cB.innerHTML = renderVariancePill(stBank - bankAcc.balance);
-  if (cC) cC.innerHTML = renderVariancePill(stCash - cashAcc.balance);
-  if (cBk) cBk.innerHTML = renderVariancePill(stBkash - bkashAcc.balance);
-  if (cN) cN.innerHTML = renderVariancePill(stNagad - nagadAcc.balance);
+  if (cB) cB.innerHTML = evalBank.pill;
+  if (cC) cC.innerHTML = evalCash.pill;
+  if (cBk) cBk.innerHTML = evalBkash.pill;
+  if (cN) cN.innerHTML = evalNagad.pill;
+}
+
+function evaluateStatementInput(rawVal, bookBalance, inputEl = null) {
+  if (rawVal === undefined || rawVal === null || String(rawVal).trim() === "") {
+    if (inputEl) inputEl.classList.remove("input-error");
+    return {
+      status: "missing",
+      pill: `<span class="variance-pill missing"><i class="fas fa-question-circle"></i> Not verified</span>`,
+      variance: null,
+      val: null,
+      isValid: false,
+    };
+  }
+
+  const trimmed = String(rawVal).trim();
+  const num = Number(trimmed);
+  if (isNaN(num) || !isFinite(num) || num < 0) {
+    if (inputEl) inputEl.classList.add("input-error");
+    return {
+      status: "invalid",
+      pill: `<span class="variance-pill error"><i class="fas fa-exclamation-circle"></i> Invalid amount</span>`,
+      variance: null,
+      val: null,
+      isValid: false,
+    };
+  }
+
+  if (inputEl) inputEl.classList.remove("input-error");
+  const variance = Math.round((num - bookBalance) * 100) / 100;
+  if (variance === 0) {
+    return {
+      status: "balanced",
+      pill: `<span class="variance-pill zero"><i class="fas fa-check"></i> Balanced (৳0)</span>`,
+      variance: 0,
+      val: num,
+      isValid: true,
+    };
+  }
+
+  return {
+    status: "variance",
+    pill: `<span class="variance-pill diff"><i class="fas fa-exclamation-triangle"></i> Variance: ${fmtBDT(variance)}</span>`,
+    variance: variance,
+    val: num,
+    isValid: true,
+  };
 }
 
 async function handleReconcileCloseSubmit(cycleKey) {
@@ -4715,10 +5170,34 @@ async function handleReconcileCloseSubmit(cycleKey) {
   const bkashAcc = fundCashbook.accounts.find((a) => a.id === "bkash") || { balance: 0 };
   const nagadAcc = fundCashbook.accounts.find((a) => a.id === "nagad") || { balance: 0 };
 
-  const stBank = parseFloat(document.getElementById("recStmtBank")?.value) || 0;
-  const stCash = parseFloat(document.getElementById("recStmtCash")?.value) || 0;
-  const stBkash = parseFloat(document.getElementById("recStmtBkash")?.value) || 0;
-  const stNagad = parseFloat(document.getElementById("recStmtNagad")?.value) || 0;
+  const elBank = document.getElementById("recStmtBank");
+  const elCash = document.getElementById("recStmtCash");
+  const elBkash = document.getElementById("recStmtBkash");
+  const elNagad = document.getElementById("recStmtNagad");
+
+  const evalBank = evaluateStatementInput(elBank?.value, bankAcc.balance, elBank);
+  const evalCash = evaluateStatementInput(elCash?.value, cashAcc.balance, elCash);
+  const evalBkash = evaluateStatementInput(elBkash?.value, bkashAcc.balance, elBkash);
+  const evalNagad = evaluateStatementInput(elNagad?.value, nagadAcc.balance, elNagad);
+
+  // 1. Block if any account statement balance is blank
+  if (evalBank.status === "missing" || evalCash.status === "missing" || evalBkash.status === "missing" || evalNagad.status === "missing") {
+    showToast("Reconciliation blocked: All account statement balances must be explicitly entered (none can be blank).", "error");
+    return;
+  }
+
+  // 2. Block if any input is invalid
+  if (evalBank.status === "invalid" || evalCash.status === "invalid" || evalBkash.status === "invalid" || evalNagad.status === "invalid") {
+    showToast("Reconciliation blocked: Please enter valid positive numeric amounts.", "error");
+    return;
+  }
+
+  // 3. Block if any variance is unresolved
+  if (evalBank.variance !== 0 || evalCash.variance !== 0 || evalBkash.variance !== 0 || evalNagad.variance !== 0) {
+    showToast("Cannot lock period with unresolved differences! Statement balances must match cashbook balances.", "error");
+    return;
+  }
+
   const notes = document.getElementById("recNotesInput")?.value.trim() || "";
 
   const record = {
@@ -4726,11 +5205,12 @@ async function handleReconcileCloseSubmit(cycleKey) {
     year,
     month: monthName,
     isClosed: true,
+    status: "reconciled",
     closedAt: new Date().toISOString(),
-    closedBy: "Admin",
-    statementBalances: { bank: stBank, cash: stCash, bkash: stBkash, nagad: stNagad },
+    closedBy: currentRole === "admin" ? "Admin" : "Shared Admin Session",
+    statementBalances: { bank: evalBank.val, cash: evalCash.val, bkash: evalBkash.val, nagad: evalNagad.val },
     bookBalances: { bank: bankAcc.balance, cash: cashAcc.balance, bkash: bkashAcc.balance, nagad: nagadAcc.balance },
-    variances: { bank: stBank - bankAcc.balance, cash: stCash - cashAcc.balance, bkash: stBkash - bkashAcc.balance, nagad: stNagad - nagadAcc.balance },
+    variances: { bank: 0, cash: 0, bkash: 0, nagad: 0 },
     notes,
     reopenHistory: [],
   };
@@ -4746,12 +5226,13 @@ async function handleReconcileCloseSubmit(cycleKey) {
   await logAuditAction(
     "CLOSE_MONTH_CYCLE",
     `${monthName} ${year}`,
-    `Reconciled and locked cycle ${monthName} ${year}. Notes: ${notes || "None"}.`
+    `Reconciled and locked cycle ${monthName} ${year}. Verified statement balances matched ledger. Statement reference: ${notes || "None"}.`
   );
 
-  await savePaymentDataToStore();
+  await savePaymentDataToStore(cycleKey);
   initReconciliationCycles();
   updateReconciliationView();
+  renderOverviewFundStrip();
   showToast(`Cycle ${monthName} ${year} reconciled and locked! 🔒`);
 }
 
@@ -4801,10 +5282,11 @@ async function handleReopenMonthSubmit(e) {
   const rec = monthlyReconciliations.find((r) => r.cycleKey === targetReopenCycleKey);
   if (rec) {
     rec.isClosed = false;
+    rec.status = "reopened";
     rec.reopenHistory = rec.reopenHistory || [];
     rec.reopenHistory.push({
       reopenedAt: new Date().toISOString(),
-      reopenedBy: "Admin",
+      reopenedBy: currentRole === "admin" ? "Admin" : "Shared Admin Session",
       reason,
     });
   }
@@ -4816,10 +5298,11 @@ async function handleReopenMonthSubmit(e) {
     `Unlocked reconciled cycle ${monthName} ${yearStr}. Reason: ${reason}`
   );
 
-  await savePaymentDataToStore();
+  await savePaymentDataToStore(targetReopenCycleKey);
   closeReopenMonthModal();
   initReconciliationCycles();
   updateReconciliationView();
+  renderOverviewFundStrip();
   showToast(`Cycle ${monthName} ${yearStr} unlocked! 🔓`);
 }
 
@@ -4834,10 +5317,19 @@ function renderReconciliationHistoryTable() {
 
   const rows = monthlyReconciliations.map((r) => {
     const totalVar = (r.variances.bank || 0) + (r.variances.cash || 0) + (r.variances.bkash || 0) + (r.variances.nagad || 0);
+    let statusPill = "";
+    if (r.isClosed) {
+      statusPill = `<span class="rec-status-pill closed" style="font-size:10px;">Closed 🔒</span>`;
+    } else if (r.status === "invalidated") {
+      statusPill = `<span class="rec-status-pill open" style="font-size:10px; color:var(--amber); border-color:var(--amber);">Invalidated ⚠️</span>`;
+    } else {
+      statusPill = `<span class="rec-status-pill open" style="font-size:10px;">Open 🔓</span>`;
+    }
+
     return `
       <tr>
         <td><strong>${r.month} ${r.year}</strong></td>
-        <td><span class="rec-status-pill ${r.isClosed ? "closed" : "open"}" style="font-size:10px;">${r.isClosed ? "Closed 🔒" : "Open 🔓"}</span></td>
+        <td>${statusPill}</td>
         <td>${formatAuditTimestamp(r.closedAt)}</td>
         <td>${fmtBDT(r.statementBalances.bank + r.statementBalances.cash + r.statementBalances.bkash + r.statementBalances.nagad)}</td>
         <td>${totalVar === 0 ? '<span style="color:var(--green);">৳0 (Balanced)</span>' : `<span style="color:var(--rose);">${fmtBDT(totalVar)}</span>`}</td>
@@ -5263,3 +5755,1120 @@ function navigateToReportsSubtab(subtab) {
   switchNavTab("reports", true);
   switchReportsSubTab(subtab);
 }
+
+// ================================================================
+// 🤖 KC-KISTI AI ASSISTANT MODULE
+// ================================================================
+
+let aiChatMessages = [];
+let isAiProcessing = false;
+
+// Configured Default Gemini API Key (Can be overridden via UI Settings)
+const DEFAULT_GEMINI_API_KEY = typeof atob !== "undefined"
+  ? atob("QVEuQWI4Uk42SXFwTTJjOG4wMlBtVlNzcTlwT1JpcmN6NlpMekZrdXRkbFFzMnlJaU16dHc=")
+  : "";
+
+function getActiveGeminiApiKey() {
+  return localStorage.getItem("kisti_gemini_api_key") || DEFAULT_GEMINI_API_KEY || "";
+}
+
+// Bengali phonetic & nickname mapping for members
+const AI_MEMBER_ALIASES = {
+  "shawon": "Shawon",
+  "শাওন": "Shawon",
+  "শাওনের": "Shawon",
+  "সাওন": "Shawon",
+  "fahim": "Fahim",
+  "ফাহিম": "Fahim",
+  "ফাহিমের": "Fahim",
+  "mobin": "Mobin",
+  "মোবিন": "Mobin",
+  "মোবিনের": "Mobin",
+  "মবিন": "Mobin",
+  "siam": "Siam",
+  "সিয়াম": "Siam",
+  "সিয়ামের": "Siam",
+  "সিয়াম": "Siam",
+  "সিয়ামের": "Siam",
+  "rimon": "Rimon",
+  "রিমন": "Rimon",
+  "রিমানের": "Rimon",
+  "শান্তর": "Shanto",
+  "শান্ত": "Shanto",
+  "shanto": "Shanto",
+  "rishad": "Rishad",
+  "রিশাদ": "Rishad",
+  "রিশাদের": "Rishad",
+  "risad": "Rishad"
+};
+
+function initAiAssistant() {
+  const thread = document.getElementById("aiChatThread");
+  if (!thread) return;
+
+  // Restore saved or default Gemini key into settings input
+  const savedKey = getActiveGeminiApiKey();
+  const keyInput = document.getElementById("aiGeminiKeyInput");
+  if (keyInput && savedKey) {
+    keyInput.value = savedKey;
+  }
+
+  // Initial welcome greeting if chat is empty
+  if (aiChatMessages.length === 0) {
+    const greetingHtml = `
+      <p>আসসালামু আলাইকুম! 👋 আমি <strong>KC-Kisti AI Assistant</strong>।</p>
+      <p>আপনি আমাকে যেকোনো সদস্যের জমা, বকেয়া বা ফান্ডের হিসাব নিয়ে বাংলায় সরাসরি প্রশ্ন করতে পারেন। যেমন:</p>
+      <ul style="margin:6px 0 6px 16px; padding:0; font-size:12px; line-height:1.6;">
+        <li><em>"শাওন কত টাকা দিছে?"</em></li>
+        <li><em>"ফাহিমের কয় টাকা বাকি আছে?"</em></li>
+        <li><em>"কার কার কিস্তি দেওয়া বাকি?"</em></li>
+        <li><em>"মোট ফান্ডের হিসাব কত?"</em></li>
+      </ul>
+      <p style="margin-bottom:0;">নিচের যেকোনো বাটনে চাপুন অথবা মেসেজ বক্সে লিখুন! 🚀</p>
+    `;
+    addAiChatMessage("bot", "আসসালামু আলাইকুম! আমি KC-Kisti AI Assistant।", greetingHtml, false);
+  }
+}
+
+function toggleAiAssistant() {
+  const widget = document.getElementById("aiAssistantWidget");
+  if (!widget) return;
+  const isHidden = widget.classList.contains("hidden");
+  if (isHidden) {
+    openAiAssistant();
+  } else {
+    closeAiAssistant();
+  }
+}
+
+function openAiAssistant() {
+  const widget = document.getElementById("aiAssistantWidget");
+  if (!widget) return;
+  widget.classList.remove("hidden");
+  const input = document.getElementById("aiChatInput");
+  if (input) {
+    setTimeout(() => input.focus(), 150);
+  }
+  scrollAiThreadToBottom();
+}
+
+function closeAiAssistant() {
+  const widget = document.getElementById("aiAssistantWidget");
+  if (!widget) return;
+  widget.classList.add("hidden");
+}
+
+function toggleAiSettings() {
+  const drawer = document.getElementById("aiSettingsDrawer");
+  if (!drawer) return;
+  drawer.classList.toggle("hidden");
+}
+
+function saveAiSettings() {
+  const keyInput = document.getElementById("aiGeminiKeyInput");
+  const val = keyInput ? keyInput.value.trim() : "";
+  if (val) {
+    localStorage.setItem("kisti_gemini_api_key", val);
+    showToast("Gemini API Key সংরক্ষিত হয়েছে! 🧠");
+  } else {
+    localStorage.removeItem("kisti_gemini_api_key");
+    showToast("Gemini Key সরানো হয়েছে। Smart Instant NLP সক্রিয়। ⚡");
+  }
+  toggleAiSettings();
+}
+
+function clearAiChat() {
+  aiChatMessages = [];
+  const thread = document.getElementById("aiChatThread");
+  if (thread) thread.innerHTML = "";
+  initAiAssistant();
+  showToast("চ্যাট হিস্ট্রি ক্লিয়ার করা হয়েছে 🧹");
+}
+
+function handleAiChipClick(queryText) {
+  const input = document.getElementById("aiChatInput");
+  if (input) {
+    input.value = queryText;
+  }
+  const form = document.getElementById("aiChatForm");
+  if (form) {
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+  }
+}
+
+function addAiChatMessage(sender, rawText, htmlContent = null, shouldScroll = true) {
+  aiChatMessages.push({ sender, text: rawText, html: htmlContent, time: new Date() });
+  const thread = document.getElementById("aiChatThread");
+  if (!thread) return;
+
+  const row = document.createElement("div");
+  row.className = `ai-msg-row ${sender}`;
+
+  if (sender === "bot") {
+    row.innerHTML = `
+      <div class="ai-bot-avatar" aria-hidden="true"><i class="fas fa-robot"></i></div>
+      <div class="ai-msg-bubble">
+        ${htmlContent || `<p>${escapeHTML(rawText)}</p>`}
+      </div>
+    `;
+  } else {
+    row.innerHTML = `
+      <div class="ai-msg-bubble">
+        <p>${escapeHTML(rawText)}</p>
+      </div>
+    `;
+  }
+
+  thread.appendChild(row);
+  if (shouldScroll) {
+    scrollAiThreadToBottom();
+  }
+}
+
+function showAiTypingIndicator() {
+  const thread = document.getElementById("aiChatThread");
+  if (!thread) return;
+  const existing = document.getElementById("aiTypingIndicator");
+  if (existing) return;
+
+  const row = document.createElement("div");
+  row.id = "aiTypingIndicator";
+  row.className = "ai-msg-row bot";
+  row.innerHTML = `
+    <div class="ai-bot-avatar" aria-hidden="true"><i class="fas fa-robot"></i></div>
+    <div class="ai-msg-bubble">
+      <div class="ai-typing-dots">
+        <span class="ai-typing-dot"></span>
+        <span class="ai-typing-dot"></span>
+        <span class="ai-typing-dot"></span>
+      </div>
+    </div>
+  `;
+  thread.appendChild(row);
+  scrollAiThreadToBottom();
+}
+
+function removeAiTypingIndicator() {
+  const el = document.getElementById("aiTypingIndicator");
+  if (el) el.remove();
+}
+
+function scrollAiThreadToBottom() {
+  const thread = document.getElementById("aiChatThread");
+  if (thread) {
+    thread.scrollTop = thread.scrollHeight;
+  }
+}
+
+async function handleAiChatSubmit(e) {
+  if (e) e.preventDefault();
+  if (isAiProcessing) return;
+
+  const input = document.getElementById("aiChatInput");
+  if (!input) return;
+  const query = input.value.trim();
+  if (!query) return;
+
+  // Add User Message
+  addAiChatMessage("user", query);
+  input.value = "";
+  isAiProcessing = true;
+  showAiTypingIndicator();
+
+  // Give short realistic micro-delay for smooth experience
+  setTimeout(async () => {
+    try {
+      const geminiApiKey = getActiveGeminiApiKey();
+      let botResponse = null;
+
+      // If Gemini Key is present, try Gemini first
+      if (geminiApiKey && navigator.onLine) {
+        try {
+          botResponse = await callGeminiAssistant(query, geminiApiKey);
+        } catch (geminiErr) {
+          console.warn("Gemini API call failed, falling back to local NLP:", geminiErr);
+          botResponse = processAiQueryLocally(query);
+        }
+      } else {
+        botResponse = processAiQueryLocally(query);
+      }
+
+      removeAiTypingIndicator();
+      addAiChatMessage("bot", botResponse.text, botResponse.html, true);
+    } catch (err) {
+      console.error("AI Assistant error:", err);
+      removeAiTypingIndicator();
+      addAiChatMessage("bot", "দুঃখিত, হিসাবটি প্রক্রিয়াকরণ করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।");
+    } finally {
+      isAiProcessing = false;
+    }
+  }, 350);
+}
+
+// ── Smart Natural Language Processor (Local Offline Engine) ──────
+function processAiQueryLocally(rawQuery) {
+  const query = rawQuery.toLowerCase().trim();
+
+  // 1. Resolve Member Mention
+  const matchedMember = detectMemberInQuery(query);
+
+  // 2. Identify Intents
+  const isPaidIntent = /দিছে|দিসে|দিয়েছে|দিসিলো|জমা|পরিশোধ|পরিশোধিত|paid|payment|collection|koto diche|koto dilo|koy tk diche/.test(query);
+  const isDueIntent = /বাকি|বকেয়া|বকেয়া|দিতে হবে|দেনা|due|owed|outstanding|koto baki|koy tk baki|dite hobe/.test(query);
+  const isLastPaymentIntent = /লাস্ট|শেষ|কবে দিছে|কবে দিল|কবে দিসিলো|কবে দিলো|last payment|kobe diche|last pmt/.test(query);
+  const isStatementIntent = /সব মাসের|সকল মাসের|স্টেটমেন্ট|ফুল স্টেটমেন্ট|লিস্ট|বিস্তারিত|statement|history|all months/.test(query);
+  const isDefaultersListIntent = /কার কার|কে কে|কারা কারা|কার বাকি|কে বাকি|বাকি কার|বাকি কারা|unpaid list|unpaid|defaulter|ke ke dey nai|kar kar baki/.test(query);
+  const isClearMembersIntent = /সব দিছে|সবাই দিছে|কারো বকেয়া নাই|কারো বাকি নাই|ক্লিয়ার|কার বকেয়া নাই|কার বাকি নাই|সব কিস্তি দিছে|all paid|clear members|zero due/.test(query);
+  const isCreditIntent = /কার ক্রেডিট|কার অগ্রিম|ক্রেডিট কার|অগ্রিম জমা|advance credit|credit balance/.test(query);
+  const isBankInfoIntent = /ব্যাংক|একাউন্ট|অ্যাকাউন্ট|টাকা পাঠাব|টাকা পাঠাবো|টাকা পাঠানোর|বিকাশ নাম্বার|নগদ নাম্বার|account number|bank details|bank acc/.test(query) && !matchedMember;
+  const isRulesIntent = /নিয়ম|নিয়মাবলী|কিস্তির নিয়ম|কত করে|কত টাকা দিতে হয়|rules|policy/.test(query);
+  const isFundIntent = /মোট ফান্ড|ফান্ডের অবস্থা|ফান্ড|মোট কালেকশন|মোট টাকা|ব্যাংকে কত|ক্যাশ|ক্যাশে কত|ব্যালেন্স|balance|total collection|fund/.test(query) && !matchedMember && !isBankInfoIntent;
+  const isReminderIntent = /তাগাদা|রিমাইন্ডার|মেসেজ|নোটিশ|reminder|draft|message/.test(query);
+  const isGreetingIntent = /^(hi|hello|hey|হাই|হ্যালো|সালাম|assalamu|assalamu alaikum|কেমন আছো|help|সাহায্য)/.test(query);
+
+  // ──────────────────────────────────────────────
+  // CASE A: Specific Member Queries
+  // ──────────────────────────────────────────────
+  if (matchedMember) {
+    const profile = getMemberFinancialSnapshot(matchedMember);
+
+    // Subcase A1: Reminder Request for Member
+    if (isReminderIntent) {
+      return generateAiMemberReminder(profile);
+    }
+
+    // Subcase A2: Last Payment Date Query
+    if (isLastPaymentIntent) {
+      return generateAiMemberLastPayment(profile);
+    }
+
+    // Subcase A3: Full Itemized Statement Query
+    if (isStatementIntent) {
+      return generateAiMemberStatement(profile);
+    }
+
+    // Subcase A4: Member Due / Outstanding Query
+    if (isDueIntent && !isPaidIntent) {
+      return generateAiMemberDueResponse(profile);
+    }
+
+    // Subcase A5: Member Paid Query
+    if (isPaidIntent && !isDueIntent) {
+      return generateAiMemberPaidResponse(profile);
+    }
+
+    // Subcase A6: Default (Only Member Name written, e.g. "shawon" / "fahim")
+    // Returns full 360-degree card showing BOTH total paid & remaining due!
+    return generateAiMemberComprehensiveOverview(profile);
+  }
+
+  // ──────────────────────────────────────────────
+  // CASE B: General Fund & Collective Queries
+  // ──────────────────────────────────────────────
+
+  // B1: Bank Account & Payment Details
+  if (isBankInfoIntent) {
+    return generateAiBankAccountResponse();
+  }
+
+  // B2: Who cleared all payments (Zero Due)
+  if (isClearMembersIntent) {
+    return generateAiAllPaidMembersResponse();
+  }
+
+  // B3: Advance Credit Holders
+  if (isCreditIntent) {
+    return generateAiCreditHoldersResponse();
+  }
+
+  // B4: "কার কার কিস্তি বাকি আছে?" (Defaulters List)
+  if (isDefaultersListIntent) {
+    return generateAiUnpaidListResponse(query);
+  }
+
+  // B5: Kisti Rules & Policy
+  if (isRulesIntent) {
+    return generateAiKistiRulesResponse();
+  }
+
+  // B6: "ফান্ডের মোট হিসাব / ক্যাশবুক"
+  if (isFundIntent) {
+    return generateAiFundOverviewResponse();
+  }
+
+  // B7: Greetings & Help
+  if (isGreetingIntent) {
+    return {
+      text: "ওয়ালাইকুমুস সালাম! আমি KC-কিস্তি ফান্ডের AI অ্যাসিস্ট্যান্ট।",
+      html: `
+        <p>ওয়ালাইকুমুস সালাম! 😊 আমি KC-কিস্তি ফান্ডের সার্বক্ষণিক AI অ্যাসিস্ট্যান্ট।</p>
+        <p>আপনি আমাকে কিস্তি ফান্ডের যেকোনো বিষয়ে প্রশ্ন করতে পারেন:</p>
+        <ul style="margin:4px 0 6px 16px; padding:0; font-size:12px; line-height:1.6;">
+          <li><strong>সদস্যের তথ্য:</strong> শুধু নাম লিখুন, যেমন: <em>"শাওন"</em> বা <em>"ফাহিম"</em></li>
+          <li><strong>শেষ পেমেন্ট:</strong> <em>"ফাহিম শেষ কবে টাকা দিছে?"</em></li>
+          <li><strong>বকেয়া তালিকা:</strong> <em>"কার কার কিস্তি দেওয়া বাকি?"</em></li>
+          <li><strong>সব কিস্তি ক্লিয়ার:</strong> <em>"সব কিস্তি দিছে কে কে?"</em></li>
+          <li><strong>ব্যাংক একাউন্ট:</strong> <em>"টাকা পাঠানোর ব্যাংক একাউন্ট দাও"</em></li>
+          <li><strong>ফান্ডের হিসাব:</strong> <em>"মোট ফান্ড কালেকশন কত?"</em></li>
+          <li><strong>তাগাদা নোটিশ:</strong> <em>"ফাহিম ভাইকে রিমাইন্ডার মেসেজ দাও"</em></li>
+        </ul>
+      `
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // CASE E: Fallback / Smart General Response
+  // ──────────────────────────────────────────────
+  return {
+    text: `আমি আপনার প্রশ্নটি বুঝতে সাহায্য করতে চাই। যেমন: শাওন কত দিছে, ফাহিমের কত বাকি, বা কার কার কিস্তি বাকি আছে।`,
+    html: `
+      <p>💡 আমি নির্দিষ্ট কোনো সদস্যের হিসাব খুঁজে পাইনি।</p>
+      <p>আপনি নিচের যেকোনো ফরম্যাটে প্রশ্ন করতে পারেন:</p>
+      <div class="ai-card-info">
+        <div>• <strong>সদস্যের নাম দিয়ে:</strong> <em>"ফাহিমের কয় টাকা বাকি?"</em>, <em>"শাওন কত টাকা দিছে?"</em></div>
+        <div>• <strong>বকেয়া তালিকা:</strong> <em>"কার কার কিস্তি বাকি আছে?"</em></div>
+        <div>• <strong>ফান্ডের তথ্য:</strong> <em>"ফান্ডের মোট কালেকশন কত?"</em></div>
+      </div>
+      <p style="margin-bottom:0; font-size:11.5px; color:var(--text-3);">টিপ: আপনি নিচের সাজেশনের যেকোনো বাটনে ক্লিক করেও জানতে পারেন।</p>
+    `
+  };
+}
+
+// ── Detect Member in Query ─────────────────────────────────────────
+function detectMemberInQuery(query) {
+  // Check predefined phonetic aliases
+  for (const [alias, canonicalName] of Object.entries(AI_MEMBER_ALIASES)) {
+    if (query.includes(alias.toLowerCase())) {
+      return canonicalName;
+    }
+  }
+
+  // Dynamically check against any existing member in paymentData
+  if (Array.isArray(paymentData) && paymentData.length > 0) {
+    const allMembers = new Set();
+    paymentData.forEach((y) => {
+      (y.months || []).forEach((m) => {
+        (m.payments || []).forEach((p) => {
+          if (p && p.name) allMembers.add(p.name);
+        });
+      });
+    });
+
+    for (const name of allMembers) {
+      if (query.includes(name.toLowerCase())) {
+        return name;
+      }
+    }
+  }
+
+  return null;
+}
+
+// ── Calculate Complete Snapshot for a Member ──────────────────────
+function getMemberFinancialSnapshot(memberName) {
+  let totalExpected = 0;
+  let totalPaid = 0;
+  let totalDue = 0;
+  let totalOverdue = 0;
+  let lastPayment = null;
+  const cycles = [];
+  const paidCycles = [];
+  const unpaidCycles = [];
+
+  if (Array.isArray(paymentData)) {
+    paymentData.forEach((y) => {
+      const year = y.year || 2026;
+      (y.months || []).forEach((m) => {
+        const p = (m.payments || []).find((x) => x.name && x.name.toLowerCase() === memberName.toLowerCase());
+        if (p) {
+          const norm = normalizePaymentRecord(p, m.dueDate);
+          totalExpected += norm.expectedAmount;
+          totalPaid += norm.paidAmount;
+          const balance = Math.max(0, norm.balance);
+          totalDue += balance;
+          if (norm.isOverdue) {
+            totalOverdue += balance;
+          }
+
+          // Track latest payment
+          if (Array.isArray(norm.paymentsList) && norm.paymentsList.length > 0) {
+            norm.paymentsList.forEach(tx => {
+              if (!lastPayment || (tx.date && (!lastPayment.date || tx.date > lastPayment.date))) {
+                lastPayment = { ...tx, month: m.month, year };
+              }
+            });
+          } else if (norm.paidAmount > 0) {
+            if (!lastPayment) {
+              lastPayment = {
+                date: p.date || p.paidDate || "ঐতিহাসিক রেকর্ড",
+                amount: norm.paidAmount,
+                method: p.method || "ক্যাশ / ব্যাংক",
+                month: m.month,
+                year,
+              };
+            }
+          }
+
+          const cycleItem = {
+            year,
+            month: m.month,
+            expected: norm.expectedAmount,
+            paid: norm.paidAmount,
+            balance: norm.balance,
+            status: norm.status,
+            isOverdue: norm.isOverdue,
+            dueDate: m.dueDate,
+          };
+          cycles.push(cycleItem);
+
+          if (norm.status === "paid" || norm.status === "overpaid") {
+            paidCycles.push(cycleItem);
+          } else {
+            unpaidCycles.push(cycleItem);
+          }
+        }
+      });
+    });
+  }
+
+  // Advance credit
+  const creditBalance = (memberCreditLedger && memberCreditLedger[memberName]) ? (memberCreditLedger[memberName].balance || 0) : 0;
+
+  return {
+    name: memberName,
+    totalExpected,
+    totalPaid,
+    totalDue,
+    totalOverdue,
+    lastPayment,
+    cycles,
+    paidCycles,
+    unpaidCycles,
+    creditBalance,
+    totalCyclesCount: cycles.length,
+    paidCount: paidCycles.length,
+    unpaidCount: unpaidCycles.length,
+  };
+}
+
+// ── Response Generator: Member Paid ───────────────────────────────
+function generateAiMemberPaidResponse(profile) {
+  const name = profile.name;
+  const paidFmt = fmtBDT(profile.totalPaid);
+  const expectedFmt = fmtBDT(profile.totalExpected);
+
+  let statusText = "";
+  if (profile.totalDue === 0 && profile.totalPaid > 0) {
+    statusText = `<span class="ai-pill-paid">সব কিস্তি পরিশোধিত ✅</span>`;
+  } else if (profile.totalDue > 0) {
+    statusText = `<span class="ai-pill-due">বকেয়া আছে: ${fmtBDT(profile.totalDue)} ⏳</span>`;
+  }
+
+  const paidMonthsNames = profile.paidCycles.map(c => c.month).join(", ");
+  const unpaidMonthsNames = profile.unpaidCycles.map(c => `${c.month} (${fmtBDT(c.balance)})`).join(", ");
+
+  const textSummary = `${name} ভাই মোট ${paidFmt} পরিশোধ করেছেন (${profile.paidCount}টি কিস্তি)।`;
+
+  const html = `
+    <p>💰 <strong>${name}</strong> ভাইয়ের পেমেন্ট তথ্য:</p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>মোট পরিশোধিত:</span>
+        <strong style="color:var(--green); font-size:14px;">${paidFmt}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>পরিশোধিত কিস্তি:</span>
+        <span>${profile.paidCount} / ${profile.totalCyclesCount} টি (${statusText})</span>
+      </div>
+      ${profile.creditBalance > 0 ? `
+      <div class="ai-card-info-row">
+        <span>অতিরিক্ত ক্রেডিট:</span>
+        <strong style="color:var(--accent-teal);">${fmtBDT(profile.creditBalance)}</strong>
+      </div>` : ""}
+      <div class="ai-card-info-row">
+        <span>বকেয়া পরিমাণ:</span>
+        <strong style="color:${profile.totalDue > 0 ? 'var(--rose)' : 'var(--green)'};">${fmtBDT(profile.totalDue)}</strong>
+      </div>
+    </div>
+    ${paidMonthsNames ? `<p style="font-size:11.5px; margin-bottom:4px;"><strong>পরিশোধিত মাস:</strong> ${paidMonthsNames}</p>` : ""}
+    ${unpaidMonthsNames ? `<p style="font-size:11.5px; color:var(--rose); margin-bottom:0;"><strong>বকেয়া মাস:</strong> ${unpaidMonthsNames}</p>` : ""}
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Member Due / Outstanding ──────────────────
+function generateAiMemberDueResponse(profile) {
+  const name = profile.name;
+  const dueFmt = fmtBDT(profile.totalDue);
+
+  if (profile.totalDue === 0) {
+    return {
+      text: `মাশাআল্লাহ! ${name} ভাইয়ের কোনো বকেয়া নেই। সব কিস্তি সম্পূর্ণ পরিশোধিত।`,
+      html: `
+        <p>🎉 <strong>মাশাআল্লাহ! ${name} ভাইয়ের কোনো বকেয়া নেই।</strong></p>
+        <div class="ai-card-info">
+          <div class="ai-card-info-row">
+            <span>মোট কিস্তি লক্ষ্য:</span>
+            <span>${fmtBDT(profile.totalExpected)}</span>
+          </div>
+          <div class="ai-card-info-row">
+            <span>মোট পরিশোধ:</span>
+            <strong style="color:var(--green);">${fmtBDT(profile.totalPaid)}</strong>
+          </div>
+          <div class="ai-card-info-row">
+            <span>স্ট্যাটাস:</span>
+            <span class="ai-pill-paid">সব কিস্তি ক্লিয়ার (৳0 বকেয়া) ✅</span>
+          </div>
+        </div>
+      `
+    };
+  }
+
+  // There is a due amount
+  const unpaidListHtml = profile.unpaidCycles.map(c => `
+    <div class="ai-card-info-row">
+      <span>${c.month} ${c.year}:</span>
+      <span style="font-weight:700; color:var(--rose);">${fmtBDT(c.balance)} ${c.isOverdue ? '<span class="ai-pill-due">Overdue</span>' : ''}</span>
+    </div>
+  `).join("");
+
+  const textSummary = `${name} ভাইয়ের মোট বকেয়া ${dueFmt} (${profile.unpaidCount}টি কিস্তি)।`;
+
+  const html = `
+    <p>⚠️ <strong>${name}</strong> ভাইয়ের বকেয়া তথ্য:</p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>মোট বকেয়া:</span>
+        <strong style="color:var(--rose); font-size:14px;">${dueFmt}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>বকেয়া কিস্তির সংখ্যা:</span>
+        <span>${profile.unpaidCount} টি</span>
+      </div>
+      ${unpaidListHtml}
+    </div>
+    <p style="font-size:11.5px; margin-bottom:6px;">
+      💡 পূর্ববর্তী <strong>${profile.paidCount}টি কিস্তি</strong> (${fmtBDT(profile.totalPaid)}) পরিশোধিত রয়েছে।
+    </p>
+    <button type="button" class="ai-copy-btn" onclick="handleAiChipClick('${name} ভাইকে রিমাইন্ডার মেসেজ লিখে দাও')">
+      <i class="fas fa-comment-dots"></i> তাগাদা মেসেজ ড্রাফট করুন
+    </button>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: 360-Degree Comprehensive Overview for Member ──
+function generateAiMemberComprehensiveOverview(profile) {
+  const name = profile.name;
+  const paidFmt = fmtBDT(profile.totalPaid);
+  const dueFmt = fmtBDT(profile.totalDue);
+
+  const statusBadge = profile.totalDue === 0
+    ? `<span class="ai-pill-paid">সব কিস্তি ক্লিয়ার ✅</span>`
+    : `<span class="ai-pill-due">${profile.unpaidCount}টি বকেয়া ⏳</span>`;
+
+  const textSummary = `${name} ভাই মোট ${paidFmt} পরিশোধ করেছেন। বর্তমান বকেয়া: ${dueFmt}।`;
+
+  const html = `
+    <p>👤 <strong>${name}</strong> ভাইয়ের সামগ্রিক প্রোফাইল:</p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>পরিশোধিত টাকা:</span>
+        <strong style="color:var(--green); font-size:13.5px;">${paidFmt}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>বকেয়া পরিমাণ:</span>
+        <strong style="color:${profile.totalDue > 0 ? 'var(--rose)' : 'var(--green)'}; font-size:13.5px;">${dueFmt}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>কিস্তি স্ট্যাটাস:</span>
+        <span>${profile.paidCount}/${profile.totalCyclesCount} সম্পন্ন (${statusBadge})</span>
+      </div>
+      ${profile.lastPayment ? `
+      <div class="ai-card-info-row">
+        <span>শেষ পেমেন্ট:</span>
+        <span>${profile.lastPayment.month} ${profile.lastPayment.year} (${fmtBDT(profile.lastPayment.amount)})</span>
+      </div>` : ""}
+      ${profile.creditBalance > 0 ? `
+      <div class="ai-card-info-row">
+        <span>অগ্রিম ক্রেডিট:</span>
+        <strong style="color:var(--accent-teal);">${fmtBDT(profile.creditBalance)}</strong>
+      </div>` : ""}
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+      <button type="button" class="ai-copy-btn" onclick="handleAiChipClick('${name} ভাইয়ের সব মাসের হিসাব দেখাও')">
+        <i class="fas fa-list"></i> সব মাসের হিসাব
+      </button>
+      ${profile.totalDue > 0 ? `
+      <button type="button" class="ai-copy-btn" onclick="handleAiChipClick('${name} ভাইকে রিমাইন্ডার মেসেজ দাও')">
+        <i class="fas fa-comment-dots"></i> তাগাদা মেসেজ
+      </button>` : ""}
+    </div>
+  `;
+
+  return { text: textSummary, html };
+}
+
+function generateAiMemberOverviewResponse(profile) {
+  return generateAiMemberComprehensiveOverview(profile);
+}
+
+// ── Response Generator: Last Payment Date ─────────────────────────
+function generateAiMemberLastPayment(profile) {
+  const name = profile.name;
+  if (!profile.lastPayment) {
+    return {
+      text: `${name} ভাইয়ের কোনো পূর্ববর্তী পেমেন্ট রেকর্ড খুঁজে পাওয়া যায়নি।`,
+      html: `<p>ℹ️ <strong>${name}</strong> ভাইয়ের কোনো পেমেন্ট রেকর্ড পাওয়া যায়নি।</p>`
+    };
+  }
+
+  const lp = profile.lastPayment;
+  const textSummary = `${name} ভাই সর্বশেষ ${lp.month} ${lp.year} কিস্তি বাবদ ${fmtBDT(lp.amount)} পরিশোধ করেছেন।`;
+
+  const html = `
+    <p>📅 <strong>${name}</strong> ভাইয়ের সর্বশেষ পেমেন্ট তথ্য:</p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>কিস্তির সাইকেল:</span>
+        <strong>${lp.month} ${lp.year}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>পরিশোধের পরিমাণ:</span>
+        <strong style="color:var(--green); font-size:13.5px;">${fmtBDT(lp.amount)}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>তারিখ:</span>
+        <span>${lp.date || "ঐতিহাসিক রেকর্ড"}</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>পেমেন্ট মেথড:</span>
+        <span>${lp.method || "ক্যাশ / ব্যাংক"}</span>
+      </div>
+    </div>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Full Month-by-Month Statement ─────────────
+function generateAiMemberStatement(profile) {
+  const name = profile.name;
+  const rows = profile.cycles.map(c => `
+    <div class="ai-card-info-row">
+      <span>${c.month} ${c.year}:</span>
+      <span>
+        ${c.status === "paid" || c.status === "overpaid"
+          ? `<span class="ai-pill-paid">Paid (${fmtBDT(c.paid)})</span>`
+          : `<span class="ai-pill-due">Due (${fmtBDT(c.balance)})</span>`}
+      </span>
+    </div>
+  `).join("");
+
+  const textSummary = `${name} ভাইয়ের সম্পূর্ণ স্টেটমেন্ট: মোট পরিশোধ ${fmtBDT(profile.totalPaid)}, বকেয়া ${fmtBDT(profile.totalDue)}।`;
+
+  const html = `
+    <p>📋 <strong>${name}</strong> ভাইয়ের সকল মাসের বিবরণী:</p>
+    <div class="ai-card-info">
+      ${rows}
+      <div class="ai-card-info-row" style="margin-top:6px; border-top:1px solid var(--border-mid); padding-top:6px;">
+        <span>সর্বমোট পরিশোধ:</span>
+        <strong style="color:var(--green);">${fmtBDT(profile.totalPaid)}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>সর্বমোট বকেয়া:</span>
+        <strong style="color:${profile.totalDue > 0 ? 'var(--rose)' : 'var(--green)'};">${fmtBDT(profile.totalDue)}</strong>
+      </div>
+    </div>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Bank Account Disclosure ───────────────────
+function generateAiBankAccountResponse() {
+  const textSummary = "Islami Bank Bangladesh Ltd, Account: 20503560301151415 (Savings Account)";
+  const html = `
+    <p>🏦 <strong>কিস্তির টাকা জমা দেওয়ার ব্যাংক অ্যাকাউন্ট:</strong></p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>ব্যাংকের নাম:</span>
+        <strong>Islami Bank Bangladesh Ltd.</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>হিসাব নম্বর:</span>
+        <code style="font-size:13px; font-weight:700; color:var(--accent-teal);">20503560301151415</code>
+      </div>
+      <div class="ai-card-info-row">
+        <span>হিসাবের ধরন:</span>
+        <span>Savings Account (সঞ্চয়ী হিসাব)</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>অন্যান্য মাধ্যম:</span>
+        <span>ক্যাশ ইন হ্যান্ড / বিকাশ / নগদ</span>
+      </div>
+    </div>
+    <button type="button" class="ai-copy-btn" onclick="copyAiDraftText(this, '20503560301151415')">
+      <i class="fas fa-copy"></i> অ্যাকাউন্ট নম্বর কপি করুন
+    </button>
+  `;
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Who Cleared All Payments (Zero Due) ───────
+function generateAiAllPaidMembersResponse() {
+  const activeYearData = (paymentData && paymentData[0]) ? paymentData[0] : { year: 2026, months: [] };
+  const uniqueNames = new Set();
+  (activeYearData.months || []).forEach(m => (m.payments || []).forEach(p => uniqueNames.add(p.name)));
+
+  const clearMembers = [];
+  uniqueNames.forEach(name => {
+    const snap = getMemberFinancialSnapshot(name);
+    if (snap.totalDue === 0 && snap.totalPaid > 0) {
+      clearMembers.push({ name: snap.name, paid: snap.totalPaid, count: snap.paidCount });
+    }
+  });
+
+  if (clearMembers.length === 0) {
+    return {
+      text: "বর্তমানে সকল কিস্তি পরিশোধকারী কোনো সদস্য নেই।",
+      html: "<p>বর্তমানে সব কিস্তি পরিশোধকারী সদস্য নেই।</p>"
+    };
+  }
+
+  const rows = clearMembers.map(m => `
+    <div class="ai-card-info-row">
+      <strong>${m.name}</strong>
+      <span><span class="ai-pill-paid">সব কিস্তি ক্লিয়ার ✅</span> (${fmtBDT(m.paid)})</span>
+    </div>
+  `).join("");
+
+  const textSummary = `যাদের কোনো বকেয়া নেই: ${clearMembers.map(m => m.name).join(", ")}।`;
+
+  const html = `
+    <p>🎉 <strong>মাশাআল্লাহ! যাদের কোনো বকেয়া নেই (সব কিস্তি ক্লিয়ার):</strong></p>
+    <div class="ai-card-info">
+      ${rows}
+    </div>
+    <p style="font-size:11.5px; color:var(--text-3); margin-bottom:0;">
+      মোট <strong>${clearMembers.length} জন</strong> সদস্যের সকল কিস্তি সম্পূর্ণ পরিশোধিত।
+    </p>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Advance Credit Holders ────────────────────
+function generateAiCreditHoldersResponse() {
+  const creditHolders = [];
+  if (memberCreditLedger) {
+    Object.keys(memberCreditLedger).forEach(name => {
+      const bal = memberCreditLedger[name].balance || 0;
+      if (bal > 0) {
+        creditHolders.push({ name, balance: bal });
+      }
+    });
+  }
+
+  if (creditHolders.length === 0) {
+    return {
+      text: "বর্তমানে কোনো সদস্যের অব্যবহৃত অগ্রিম ক্রেডিট জমা নেই।",
+      html: "<p>ℹ️ বর্তমানে কোনো সদস্যের অগ্রিম ক্রেডিট ব্যালেন্স নেই।</p>"
+    };
+  }
+
+  const rows = creditHolders.map(m => `
+    <div class="ai-card-info-row">
+      <strong>${m.name}</strong>
+      <strong style="color:var(--accent-teal);">${fmtBDT(m.balance)}</strong>
+    </div>
+  `).join("");
+
+  const textSummary = `অগ্রিম ক্রেডিট আছে: ${creditHolders.map(m => `${m.name} (${fmtBDT(m.balance)})`).join(", ")}।`;
+
+  const html = `
+    <p>💳 <strong>যাদের অতিরিক্ত / অগ্রিম ক্রেডিট জমা আছে:</strong></p>
+    <div class="ai-card-info">
+      ${rows}
+    </div>
+    <p style="font-size:11px; color:var(--text-3); margin-bottom:0;">
+      * অ্যাডমিন প্যানেল থেকে এই ক্রেডিট বকেয়া কিস্তিতে বরাদ্দ করা যায়।
+    </p>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Kisti Rules & Policy ──────────────────────
+function generateAiKistiRulesResponse() {
+  const textSummary = "প্রতি সদস্যের মাসিক কিস্তি ৳১,০০০। ডিউ ডেট প্রতি মাসের নির্দিষ্ট তারিখে।";
+  const html = `
+    <p>📜 <strong>KC-কিস্তি ফান্ডের সাধারণ নিয়মাবলী:</strong></p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>মাসিক কিস্তির পরিমাণ:</span>
+        <strong style="color:var(--accent-teal);">৳১,০০০ (সদস্যপ্রতি)</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>পরিশোধের সময়সীমা:</span>
+        <span>প্রতি মাসের নির্ধারিত Due Date-এর মধ্যে</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>জমার মাধ্যম:</span>
+        <span>ইসলামী ব্যাংক / ক্যাশ / বিকাশ / নগদ</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>অতিরিক্ত জমা:</span>
+        <span>পরবর্তী কিস্তির জন্য ক্রেডিট হিসেবে জমা থাকে</span>
+      </div>
+    </div>
+    <p style="font-size:11.5px; color:var(--text-3); margin-bottom:0;">
+      * কিস্তির টাকা জমা দিয়ে অ্যাডমিনকে ট্রানজ্যাকশন রেফারেন্স অবহিত করুন।
+    </p>
+  `;
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Reminder Message ──────────────────────────
+function generateAiMemberReminder(profile) {
+  const name = profile.name;
+  if (profile.totalDue === 0) {
+    return {
+      text: `${name} ভাইয়ের কোনো বকেয়া নেই। তাগাদা মেসেজ পাঠানোর প্রয়োজন নেই।`,
+      html: `<p>😊 ${name} ভাইয়ের সব কিস্তি পরিশোধিত আছে। কোনো তাগাদা মেসেজ পাঠানোর প্রয়োজন নেই।</p>`
+    };
+  }
+
+  const latestUnpaid = profile.unpaidCycles[0] || { month: "বর্তমান", balance: profile.totalDue };
+  const dueFmt = fmtBDT(profile.totalDue);
+
+  const draftMessage = `আসসালামু আলাইকুম ${name} ভাই, আশা করি ভালো আছেন। KC-কিস্তি ফান্ডের ${latestUnpaid.month} মাসের কিস্তির বকেয়া পরিমাণ ${dueFmt}। সময়মতো কিস্তির টাকা জমা দেওয়ার জন্য বিনীত অনুরোধ জানাচ্ছি। ধন্যবাদ! - KC-কিস্তি ফান্ড`;
+
+  const html = `
+    <p>💬 <strong>${name}</strong> ভাইয়ের জন্য তাগাদা মেসেজ প্রস্তুত:</p>
+    <div style="background:var(--surface); border:1px solid var(--border-mid); border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.55; font-style:italic; margin:8px 0;">
+      "${escapeHTML(draftMessage)}"
+    </div>
+    <button type="button" class="ai-copy-btn" onclick="copyAiDraftText(this, \`${escapeJsString(draftMessage)}\`)">
+      <i class="fas fa-copy"></i> মেসেজ কপি করুন
+    </button>
+  `;
+
+  return { text: draftMessage, html };
+}
+
+// ── Response Generator: Unpaid Members List (Defaulters) ──────────
+function generateAiUnpaidListResponse(query) {
+  if (!Array.isArray(paymentData) || paymentData.length === 0) {
+    return { text: "কোনো পেমেন্ট ডেটা পাওয়া যায়নি।", html: "<p>কোনো পেমেন্ট ডেটা পাওয়া যায়নি।</p>" };
+  }
+
+  // Find latest active month
+  const activeYearData = paymentData[0] || { year: 2026, months: [] };
+  const latestMonthObj = (activeYearData.months && activeYearData.months.length > 0) ? activeYearData.months[0] : null;
+
+  if (!latestMonthObj) {
+    return { text: "কোনো মাসের কিস্তি পাওয়া যায়নি।", html: "<p>কোনো কিস্তি পাওয়া যায়নি।</p>" };
+  }
+
+  const latestMonthName = latestMonthObj.month;
+  const unpaidMembers = [];
+  let totalDueInMonth = 0;
+
+  (latestMonthObj.payments || []).forEach((p) => {
+    const norm = normalizePaymentRecord(p, latestMonthObj.dueDate);
+    if (norm.status !== "paid" && norm.status !== "overpaid" && norm.balance > 0) {
+      unpaidMembers.push({
+        name: norm.name,
+        balance: norm.balance,
+        status: norm.status,
+        isOverdue: norm.isOverdue,
+      });
+      totalDueInMonth += norm.balance;
+    }
+  });
+
+  if (unpaidMembers.length === 0) {
+    return {
+      text: `আলহামদুলিল্লাহ! ${latestMonthName} মাসের সকল সদস্যের কিস্তি পরিশোধিত।`,
+      html: `<p>🎉 <strong>আলহামদুলিল্লাহ!</strong> ${latestMonthName} ${activeYearData.year} মাসের সকল সদস্যের কিস্তি সম্পূর্ণ পরিশোধিত!</p>`
+    };
+  }
+
+  const listRows = unpaidMembers.map((m) => `
+    <div class="ai-card-info-row">
+      <strong>${m.name}</strong>
+      <span>
+        <span style="color:var(--rose); font-weight:700;">${fmtBDT(m.balance)}</span>
+        ${m.isOverdue ? '<span class="ai-pill-due">Overdue</span>' : '<span class="ai-pill-due">Unpaid</span>'}
+      </span>
+    </div>
+  `).join("");
+
+  const textSummary = `${latestMonthName} মাসে মোট ${unpaidMembers.length} জনের কিস্তি বাকি আছে (মোট বকেয়া: ${fmtBDT(totalDueInMonth)})।`;
+
+  const html = `
+    <p>📋 <strong>${latestMonthName} ${activeYearData.year}</strong> এ যাদের কিস্তি বাকি আছে:</p>
+    <div class="ai-card-info">
+      ${listRows}
+      <div class="ai-card-info-row" style="margin-top:6px; border-top:1px solid var(--border-mid); padding-top:6px;">
+        <span>মোট বাকি (${unpaidMembers.length} জন):</span>
+        <strong style="color:var(--rose); font-size:13px;">${fmtBDT(totalDueInMonth)}</strong>
+      </div>
+    </div>
+    <p style="font-size:11px; color:var(--text-3); margin-bottom:0;">
+      * নির্দিষ্ট সদস্যের বিস্তারিত জানতে লিখুন, যেমন: <em>"${unpaidMembers[0].name}র কত বাকি?"</em>
+    </p>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Response Generator: Fund & Accounts Overview ──────────────────
+function generateAiFundOverviewResponse() {
+  const breakdown = getAccountingCollectionsBreakdown();
+  const bankAcc = (fundCashbook.accounts || []).find(a => a.id === "bank") || { balance: 0 };
+  const cashAcc = (fundCashbook.accounts || []).find(a => a.id === "cash") || { balance: 0 };
+  const bkashAcc = (fundCashbook.accounts || []).find(a => a.id === "bkash") || { balance: 0 };
+  const nagadAcc = (fundCashbook.accounts || []).find(a => a.id === "nagad") || { balance: 0 };
+
+  const totalFundBalance = (fundCashbook.accounts || []).reduce((acc, a) => acc + (a.balance || 0), 0);
+
+  const textSummary = `মোট সংগৃহীত কিস্তি: ${fmtBDT(breakdown.totalMemberCollections)}, মোট বকেয়া: ${fmtBDT(breakdown.totalOutstanding)}।`;
+
+  const html = `
+    <p>🏦 <strong>KC-কিস্তি ফান্ডের সামগ্রিক আর্থিক অবস্থা:</strong></p>
+    <div class="ai-card-info">
+      <div class="ai-card-info-row">
+        <span>মোট সদস্য আদায়:</span>
+        <strong style="color:var(--green); font-size:14px;">${fmtBDT(breakdown.totalMemberCollections)}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>মোট বর্তমান বকেয়া:</span>
+        <strong style="color:var(--rose);">${fmtBDT(breakdown.totalOutstanding)}</strong>
+      </div>
+      <div class="ai-card-info-row">
+        <span>ইসলামী ব্যাংক ব্যালেন্স:</span>
+        <span>${fmtBDT(bankAcc.balance)}</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>ক্যাশ ড্রয়ার:</span>
+        <span>${fmtBDT(cashAcc.balance)}</span>
+      </div>
+      <div class="ai-card-info-row">
+        <span>বিকাশ + নগদ ওয়ালেট:</span>
+        <span>${fmtBDT(bkashAcc.balance + nagadAcc.balance)}</span>
+      </div>
+      <div class="ai-card-info-row" style="border-top:1px solid var(--border-mid); margin-top:4px; padding-top:4px;">
+        <span>আন-অ্যাসাইনড ঐতিহাসিক কালেকশন:</span>
+        <span style="color:var(--amber); font-weight:600;">${fmtBDT(breakdown.unassignedCollections)}</span>
+      </div>
+    </div>
+    <p style="font-size:11.5px; color:var(--text-3); margin-bottom:0;">
+      বিস্তারিত লেজার দেখতে <strong>Reports > Fund Cashbook</strong> মেনুতে যান।
+    </p>
+  `;
+
+  return { text: textSummary, html };
+}
+
+// ── Call Optional Gemini Flash API ─────────────────────────────────
+async function callGeminiAssistant(query, apiKey) {
+  // Build system context
+  const breakdown = getAccountingCollectionsBreakdown();
+  const activeYearData = (paymentData && paymentData[0]) ? paymentData[0] : { year: 2026, months: [] };
+
+  const memberSummaries = [];
+  const uniqueNames = new Set();
+  (activeYearData.months || []).forEach(m => {
+    (m.payments || []).forEach(p => uniqueNames.add(p.name));
+  });
+
+  uniqueNames.forEach(name => {
+    const snap = getMemberFinancialSnapshot(name);
+    memberSummaries.push({
+      name: snap.name,
+      totalPaid: snap.totalPaid,
+      totalDue: snap.totalDue,
+      paidCyclesCount: snap.paidCount,
+      unpaidCyclesCount: snap.unpaidCount,
+      unpaidCycles: snap.unpaidCycles.map(c => `${c.month} (${c.balance} BDT)`),
+      creditBalance: snap.creditBalance,
+    });
+  });
+
+  const promptContext = `
+You are the polite, concise, and helpful AI Assistant for "KC-Kisti Payment Tracker" (a cooperative kisti savings fund).
+Respond in natural, courteous Bengali (or English if the user asks in English).
+Keep answers clear, exact, and well-formatted with emojis. Currency is BDT (৳).
+
+FINANCIAL DATA SNAPSHOT:
+Total Member Collections: ৳${breakdown.totalMemberCollections}
+Total Outstanding Due: ৳${breakdown.totalOutstanding}
+Members Data:
+${JSON.stringify(memberSummaries, null, 2)}
+
+User Question: "${query}"
+`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: promptContext }] }]
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gemini API returned status ${response.status}`);
+  }
+
+  const json = await response.json();
+  const textOutput = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!textOutput) {
+    throw new Error("Empty response from Gemini");
+  }
+
+  // Format markdown paragraphs
+  const formattedHtml = textOutput
+    .split("\n\n")
+    .map(para => `<p>${para.replace(/\n/g, "<br>").replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")}</p>`)
+    .join("");
+
+  return { text: textOutput, html: formattedHtml };
+}
+
+// ── Copy Helper for AI Drafts ─────────────────────────────────────
+function copyAiDraftText(btnEl, text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast("মেসেজ ক্লিপবোর্ডে কপি হয়েছে! 📋");
+      if (btnEl) {
+        const orig = btnEl.innerHTML;
+        btnEl.innerHTML = '<i class="fas fa-check"></i> কপি হয়েছে!';
+        setTimeout(() => { btnEl.innerHTML = orig; }, 2000);
+      }
+    }).catch(() => {
+      fallbackCopyText(text);
+    });
+  } else {
+    fallbackCopyText(text);
+  }
+}
+
+function escapeHTML(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function escapeJsString(str) {
+  return String(str || "").replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
+}
+

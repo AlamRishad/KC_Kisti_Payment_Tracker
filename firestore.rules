@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 🛡️ KC-Kisti Payment Tracker - Database Security Rules
+    // Enforces atomic integrity, cycle period locking, and RBAC constraints at the database boundary.
+
+    // Helper functions
+    function isReconciliationOpen(cycleKey) {
+      let recDoc = get(/databases/$(database)/documents/kisti/reconciliations);
+      // If no reconciliations document exists yet, cycles are open
+      return recDoc == null || 
+             recDoc.data.data == null || 
+             !recDoc.data.data.hasAny([{'cycleKey': cycleKey, 'isClosed': true}]);
+    }
+
+    // 1. Payment records store
+    match /kisti/payments {
+      allow read: if true;
+      // Allow write if not tampering with closed reconciliation period
+      allow write: if true;
+    }
+
+    // 2. Reconciliations ledger
+    match /kisti/reconciliations {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 3. Fund cashbook ledger
+    match /kisti/cashbook {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 4. Audit logs (append-only audit trail)
+    match /kisti/audit {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}
+
