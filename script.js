@@ -11,7 +11,7 @@ let isOnline = navigator.onLine !== false;
 
 // 🔐 Admin & Role-Based Access Control
 const ADMIN_PASSWORD = "admin123";
-let currentRole = sessionStorage.getItem("kisti_user_role") || "member";
+let currentRole = localStorage.getItem("kisti_user_role") || sessionStorage.getItem("kisti_user_role") || "member";
 let activeNavTab = sessionStorage.getItem("kisti_active_tab") || "overview";
 let activeReportsSubTab = sessionStorage.getItem("kisti_reports_subtab") || "analytics";
 
@@ -1070,11 +1070,9 @@ function initModalEvents() {
 // 🔐 Role System Functions
 function initRoleSystem() {
   updateRoleUI();
-
-  const hasPrompted = sessionStorage.getItem("kisti_role_prompted");
-  if (!hasPrompted && !sessionStorage.getItem("kisti_user_role")) {
-    openAuthModal();
-  }
+  // Zero-Friction: Never show annoying blocking modal on page reload.
+  // By default, everyone enjoys instant transparent view-only access.
+  // Admins can log in on-demand anytime via the header 'Admin Login' button.
 }
 
 function updateRoleUI() {
@@ -1154,8 +1152,8 @@ function closeAuthModal() {
 
 function enterAsMember() {
   currentRole = "member";
+  localStorage.setItem("kisti_user_role", "member");
   sessionStorage.setItem("kisti_user_role", "member");
-  sessionStorage.setItem("kisti_role_prompted", "true");
   updateRoleUI();
   closeAuthModal();
   showToast("Entered as General Member (View-Only mode) 👁️");
@@ -1169,8 +1167,8 @@ function handleAdminLogin(e) {
 
   if (password === ADMIN_PASSWORD) {
     currentRole = "admin";
+    localStorage.setItem("kisti_user_role", "admin");
     sessionStorage.setItem("kisti_user_role", "admin");
-    sessionStorage.setItem("kisti_role_prompted", "true");
     updateRoleUI();
     closeAuthModal();
     showToast("Logged in as Admin! Full edit access unlocked 🛡️");
@@ -1185,6 +1183,7 @@ function handleAdminLogin(e) {
 
 function logoutRole() {
   currentRole = "member";
+  localStorage.setItem("kisti_user_role", "member");
   sessionStorage.setItem("kisti_user_role", "member");
   updateRoleUI();
   showToast("Logged out of Admin. Switched to Member view 👁️");
