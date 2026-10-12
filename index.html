@@ -998,11 +998,11 @@
           <input type="hidden" id="dueDateTargetYear" />
           <input type="hidden" id="dueDateTargetMonth" />
           <div class="form-group">
-            <label id="dueDateCycleLabel">Cycle</label>
+            <label id="dueDateCycleLabel"><i class="fas fa-calendar-check"></i> Cycle</label>
             <input type="text" id="dueDateCycleText" readonly style="opacity: 0.85;" />
           </div>
           <div class="form-group">
-            <label for="dueDateInput">Cycle Due Date (Asia/Dhaka)</label>
+            <label for="dueDateInput"><i class="fas fa-clock"></i> Cycle Due Date (Asia/Dhaka)</label>
             <input type="date" id="dueDateInput" required />
             <small style="color: var(--text-3); display: block; margin-top: 4px; font-size: 11px;">Unpaid balances past this date in Asia/Dhaka will be flagged as Overdue.</small>
           </div>
@@ -1020,19 +1020,19 @@
         </div>
         <form id="addForm" class="modal-form">
           <div class="form-group">
-            <label for="modalName">Member Name</label>
+            <label for="modalName"><i class="fas fa-user"></i> Member Name</label>
             <select id="modalName" required></select>
           </div>
           <div class="form-group">
-            <label for="modalMonth">Month</label>
+            <label for="modalMonth"><i class="fas fa-calendar-alt"></i> Month</label>
             <select id="modalMonth" required></select>
           </div>
           <div class="form-group">
-            <label for="modalAmount">Expected Amount (৳)</label>
+            <label for="modalAmount"><i class="fas fa-coins"></i> Expected Amount (৳)</label>
             <input type="number" id="modalAmount" value="1000" min="1" step="any" required />
           </div>
           <div class="form-group checkbox">
-            <label><input type="checkbox" id="modalPaid" checked /> Paid in Full</label>
+            <label><input type="checkbox" id="modalPaid" checked /> <span>Paid in Full</span></label>
           </div>
           <button type="submit" class="btn-submit" id="savePaymentBtn">Save Payment</button>
         </form>
@@ -1049,7 +1049,7 @@
         <form id="newMonthForm" class="modal-form">
           <div style="display: flex; gap: 12px">
             <div class="form-group" style="flex: 1">
-              <label for="newMonthYear">Year</label>
+              <label for="newMonthYear"><i class="fas fa-calendar"></i> Year</label>
               <input
                 type="number"
                 id="newMonthYear"
@@ -1059,12 +1059,12 @@
               />
             </div>
             <div class="form-group" style="flex: 1.4">
-              <label for="newMonthSelect">Month</label>
+              <label for="newMonthSelect"><i class="fas fa-calendar-alt"></i> Month</label>
               <select id="newMonthSelect" required></select>
             </div>
           </div>
           <div class="form-group">
-            <label for="newMonthDueDate">Cycle Due Date (Asia/Dhaka) <span style="color:var(--rose);">*</span></label>
+            <label for="newMonthDueDate"><i class="fas fa-clock"></i> Cycle Due Date (Asia/Dhaka) <span style="color:var(--rose);">*</span></label>
             <input
               type="date"
               id="newMonthDueDate"
@@ -1073,7 +1073,7 @@
             <small style="color: var(--text-3); font-size: 11px;">Mandatory cycle due date in Asia/Dhaka time. Defines overdue threshold.</small>
           </div>
           <div class="form-group">
-            <label for="newMonthAmount">Default Amount per Member (৳)</label>
+            <label for="newMonthAmount"><i class="fas fa-money-bill-wave"></i> Default Amount per Member (৳)</label>
             <input
               type="number"
               id="newMonthAmount"
@@ -1166,19 +1166,36 @@
                 Add new payments, create monthly cycles, and modify member
                 payment statuses.
               </p>
-              <form id="adminLoginForm" onsubmit="handleAdminLogin(event)">
-                <div class="form-group" style="margin-bottom: 8px">
-                  <input
-                    type="password"
-                    id="adminPasswordInput"
-                    placeholder="Enter Admin Password"
-                    required
-                    autocomplete="current-password"
-                  />
+              <form id="adminLoginForm" class="auth-login-form" onsubmit="handleAdminLogin(event)">
+                <div class="auth-field-group">
+                  <label for="adminPasswordInput" class="auth-input-label">
+                    <i class="fas fa-key"></i>
+                    <span>Admin Passcode</span>
+                  </label>
+                  <div class="auth-input-wrapper">
+                    <i class="fas fa-lock auth-input-icon"></i>
+                    <input
+                      type="password"
+                      id="adminPasswordInput"
+                      class="auth-password-input"
+                      placeholder="Enter Admin Password"
+                      required
+                      autocomplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      id="adminPassToggleBtn"
+                      class="auth-toggle-pass-btn"
+                      onclick="toggleAdminPasswordVisibility()"
+                      aria-label="Toggle passcode visibility"
+                      title="Show / Hide passcode"
+                    >
+                      <i id="adminPassToggleIcon" class="fas fa-eye"></i>
+                    </button>
+                  </div>
                 </div>
                 <div id="adminLoginError" class="auth-error-msg hidden">
-                  <i class="fas fa-exclamation-triangle"></i> Incorrect admin
-                  password!
+                  <i class="fas fa-exclamation-triangle"></i> Incorrect admin password!
                 </div>
                 <button type="submit" class="btn-role-admin">
                   <i class="fas fa-unlock-alt"></i> Login as Admin

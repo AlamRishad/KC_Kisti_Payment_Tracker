@@ -1140,9 +1140,27 @@ function openAuthModal() {
   const modal = document.getElementById("roleAuthModal");
   const errEl = document.getElementById("adminLoginError");
   const passInput = document.getElementById("adminPasswordInput");
+  const toggleIcon = document.getElementById("adminPassToggleIcon");
   if (errEl) errEl.classList.add("hidden");
-  if (passInput) passInput.value = "";
+  if (passInput) {
+    passInput.value = "";
+    passInput.type = "password";
+  }
+  if (toggleIcon) toggleIcon.className = "fas fa-eye";
   if (modal) modal.classList.remove("hidden");
+}
+
+function toggleAdminPasswordVisibility() {
+  const passInput = document.getElementById("adminPasswordInput");
+  const icon = document.getElementById("adminPassToggleIcon");
+  if (!passInput) return;
+  if (passInput.type === "password") {
+    passInput.type = "text";
+    if (icon) icon.className = "fas fa-eye-slash";
+  } else {
+    passInput.type = "password";
+    if (icon) icon.className = "fas fa-eye";
+  }
 }
 
 function closeAuthModal() {
