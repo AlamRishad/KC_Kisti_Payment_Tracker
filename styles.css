@@ -4416,6 +4416,21 @@ body[data-role="member"] .month-tile:hover {
   box-shadow: 0 6px 16px rgba(79, 70, 229, 0.32);
 }
 
+[data-theme="light"] .btn-pmt-quick-toggle.is-revert {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+}
+[data-theme="light"] .btn-pmt-quick-toggle.is-revert:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+[data-theme="light"] .pmt-member-view-notice {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #334155 !important;
+}
+
 [data-theme="light"] .calc-tab {
   border-color: #cbd5e1;
   color: #64748b;

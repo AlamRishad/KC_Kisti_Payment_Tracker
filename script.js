@@ -1798,12 +1798,13 @@ async function togglePaymentStatus(month, name, year) {
   const payment = monthData.payments.find((p) => p.name === name);
   if (!payment) return;
 
-  // 🛡️ Safety: If this installment has genuine transactions recorded, prevent destructive silent toggle!
+  // 🛡️ Safety: If this installment has genuine transactions recorded, prompt before reverting!
   const activeTx = (payment.paymentsList || []).filter((tx) => tx.status !== "voided");
   if (activeTx.length > 0) {
-    showToast("This installment has genuine transaction records. Please use the Payment Details modal to view, record, or void payments with an audit reason.", "info");
-    openPaymentDetailModal(year, month, name);
-    return;
+    if (payment.paid || (payment.paidAmount && payment.paidAmount > 0)) {
+      await revertPaymentToUnpaid(year, month, name);
+      return;
+    }
   }
 
   const prevStatus = payment.paid ? "Paid" : "Unpaid";
@@ -2232,26 +2233,32 @@ function openPaymentDetailModal(year, monthName, memberName) {
   // 3. Admin 1-Click Quick Action Bar & Reminder Trigger
   let adminQuickToggleBar = "";
   if (currentRole === "admin" && !isPeriodClosed) {
-    const activeTxCount = pmtList.filter((x) => x.status !== "voided").length;
-    if (activeTxCount === 0) {
-      if (p.paid) {
-        adminQuickToggleBar = `
-          <div class="pmt-quick-actions-bar">
-            <button type="button" class="btn-pmt-quick-toggle is-revert" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
-              <i class="fas fa-undo-alt" aria-hidden="true"></i> Revert Status to Unpaid
-            </button>
-          </div>
-        `;
-      } else {
-        adminQuickToggleBar = `
-          <div class="pmt-quick-actions-bar">
-            <button type="button" class="btn-pmt-quick-toggle is-pay" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
-              <i class="fas fa-check-circle" aria-hidden="true"></i> Quick Action: Mark as Paid in Full (${fmtBDT(p.expectedAmount)})
-            </button>
-          </div>
-        `;
-      }
+    if (p.paid || (p.paidAmount && p.paidAmount > 0)) {
+      adminQuickToggleBar = `
+        <div class="pmt-quick-actions-bar">
+          <button type="button" class="btn-pmt-quick-toggle is-revert" onclick="revertPaymentToUnpaid(${year}, '${monthName}', '${memberName}')">
+            <i class="fas fa-undo-alt" aria-hidden="true"></i> Revert Status to Unpaid (বকেয়া করুন)
+          </button>
+        </div>
+      `;
+    } else {
+      adminQuickToggleBar = `
+        <div class="pmt-quick-actions-bar">
+          <button type="button" class="btn-pmt-quick-toggle is-pay" onclick="handleModalQuickToggle(${year}, '${monthName}', '${memberName}')">
+            <i class="fas fa-check-circle" aria-hidden="true"></i> Quick Action: Mark as Paid in Full (${fmtBDT(p.expectedAmount)})
+          </button>
+        </div>
+      `;
     }
+  } else if (currentRole === "member") {
+    adminQuickToggleBar = `
+      <div class="pmt-member-view-notice" style="background: rgba(148, 163, 184, 0.1); border: 1px dashed var(--border-mid); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 12px; color: var(--text-2); display: flex; align-items: center; justify-content: space-between;">
+        <span><i class="fas fa-eye"></i> Member Mode (View Only)</span>
+        <button type="button" class="btn-sm" onclick="openAuthModal()" style="background: var(--indigo); color: #fff; border: none; padding: 5px 12px; border-radius: 6px; font-size: 11.5px; font-weight: 600; cursor: pointer;">
+          <i class="fas fa-lock"></i> Switch to Admin
+        </button>
+      </div>
+    `;
   }
 
   // 4. Admin Record Form or Period Locked Notice
@@ -2462,6 +2469,88 @@ async function handleModalQuickToggle(year, monthName, memberName) {
 function closePaymentDetailModal() {
   const modal = document.getElementById("paymentDetailModal");
   if (modal) modal.classList.add("hidden");
+}
+
+async function revertPaymentToUnpaid(year, monthName, memberName) {
+  if (currentRole !== "admin") {
+    showToast("Admin access required to modify payment status! 🔒", "warning");
+    return;
+  }
+  if (!checkOnlineForFinancialWrite()) return;
+
+  const rec = getCycleReconciliation(year, monthName);
+  if (rec && rec.isClosed) {
+    showToast(`Cycle ${monthName} ${year} is closed & reconciled. Reopen period to modify payments. 🔒`, "error");
+    return;
+  }
+
+  const yearData = paymentData.find((y) => y.year == year);
+  if (!yearData) return;
+  const monthData = yearData.months.find((m) => m.month === monthName);
+  if (!monthData) return;
+  const payment = monthData.payments.find((p) => p.name === memberName);
+  if (!payment) return;
+
+  const confirmed = confirm(`Are you sure you want to revert ${memberName}'s payment for ${monthName} ${year} back to Unpaid (বকেয়া)?`);
+  if (!confirmed) return;
+
+  const prevPaidAmount = payment.paidAmount || (payment.paid ? (payment.amount || 1000) : 0);
+
+  // Mark all active transactions under this installment as voided
+  if (Array.isArray(payment.paymentsList) && payment.paymentsList.length > 0) {
+    payment.paymentsList.forEach((tx) => {
+      if (tx.status !== "voided") {
+        tx.status = "voided";
+        tx.voidReason = "Reverted to Unpaid by Admin";
+        tx.voidType = "correction";
+        tx.voidedAt = new Date().toISOString();
+        tx.voidedBy = "Admin";
+
+        // Also void corresponding cashbook entry if exists
+        if (typeof fundCashbook !== "undefined" && Array.isArray(fundCashbook.entries)) {
+          const cbEntry = fundCashbook.entries.find((e) => e.relatedPaymentId === tx.id);
+          if (cbEntry) {
+            cbEntry.status = "voided";
+          }
+        }
+      }
+    });
+  }
+
+  // Update installment state to unpaid
+  payment.paid = false;
+  payment.paidAmount = 0;
+  payment.balance = payment.expectedAmount || payment.amount || 1000;
+
+  if (rec && rec.status === "reconciled") {
+    rec.status = "invalidated";
+    rec.invalidatedAt = new Date().toISOString();
+  }
+
+  if (typeof recalculateCashbookBalances === "function") {
+    recalculateCashbookBalances();
+  }
+  if (typeof recalculateMemberCredits === "function") {
+    recalculateMemberCredits();
+  }
+
+  await logAuditAction(
+    "REVERT_UNPAID",
+    `${memberName} · ${monthName} ${year}`,
+    `Status reverted to Unpaid. Previous payment was ${fmtBDT(prevPaidAmount)}`,
+    `Paid: ${fmtBDT(prevPaidAmount)}`,
+    "Unpaid (৳0)"
+  );
+
+  await savePaymentDataToStore(`${year}-${monthName}`);
+  showToast(`${memberName}'s payment for ${monthName} ${year} marked as Unpaid ✅`);
+
+  // Re-render modal if open, and update filters/table
+  const modal = document.getElementById("paymentDetailModal");
+  if (modal && !modal.classList.contains("hidden")) {
+    openPaymentDetailModal(year, monthName, memberName);
+  }
+  applyFilters();
 }
 
 async function handleRecordPaymentSubmit(e, year, monthName, memberName) {
